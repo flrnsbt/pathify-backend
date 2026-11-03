@@ -37,7 +37,7 @@ async function processPendingTransactions(
   confirmed: Array<{ id: string; txHash?: string; credits: number }>;
   failed: Array<{ id: string; reason: string }>;
 }> {
-  const projectId = env.FIREBASE_PROJECT_ID || 'vectorizerr';
+  const projectId = env.FIREBASE_PROJECT_ID as string;
   const accessToken = await getGoogleAccessToken(
     env.FIREBASE_CLIENT_EMAIL,
     env.FIREBASE_PRIVATE_KEY
