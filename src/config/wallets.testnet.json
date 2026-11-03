@@ -4,127 +4,127 @@
       "chainKey": "bsc",
       "chainId": 97,
       "token": "USDT",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "bsc",
       "chainId": 97,
       "token": "USDC",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "bsc",
       "chainId": 97,
       "token": "BNB",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "eth",
       "chainId": 11155111,
       "token": "ETH",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "eth",
       "chainId": 11155111,
       "token": "USDT",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "eth",
       "chainId": 11155111,
       "token": "USDC",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "pol",
       "chainId": 80002,
       "token": "USDT",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "pol",
       "chainId": 80002,
       "token": "USDC",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "pol",
       "chainId": 80002,
       "token": "POL",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "base",
       "chainId": 84532,
       "token": "ETH",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "base",
       "chainId": 84532,
       "token": "USDC",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "arbitrum",
       "chainId": 421614,
       "token": "ETH",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "arbitrum",
       "chainId": 421614,
       "token": "USDT",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "arbitrum",
       "chainId": 421614,
       "token": "USDC",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "op",
       "chainId": 11155420,
       "token": "ETH",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "op",
       "chainId": 11155420,
       "token": "USDC",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "avax",
       "chainId": 43113,
       "token": "AVAX",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "avax",
       "chainId": 43113,
       "token": "USDT",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "avax",
       "chainId": 43113,
       "token": "USDC",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "plasma",
       "chainId": 9746,
       "token": "XPL",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     },
     {
       "chainKey": "plasma",
       "chainId": 9746,
       "token": "USDC",
-      "address": "0x0000000000000000000000000000000000000000"
+      "address": "0x795f7fc0f96Fc8572B8A7112372bcA83Cce041aa"
     }
   ]
 }
