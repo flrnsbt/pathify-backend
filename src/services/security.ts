@@ -1,6 +1,6 @@
 import { Env, getCorsHeaders, ALLOWED_ORIGINS } from '../index';
 import { verifyAppCheckToken } from './app-check';
-import { verifyFirebaseToken } from './handshake';
+import { verifyFirebaseToken } from './auth';
 
 export interface SecurityCheckOptions {
   /**

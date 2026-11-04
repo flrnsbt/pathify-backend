@@ -1,8 +1,6 @@
 import { Env } from '../index';
 import { verifyWorkerSecurity } from './security';
-
-const DEFAULT_SECRET = 'vz-cryptographic-handshake-secret-key-prod-994';
-const FIREBASE_API_KEY = 'AIzaSyAJ1he5OrzyuuLy9S3Q6efQmRCQsDV5O-s';
+import { getGoogleAccessToken, atomicUnlockImage, atomicConsumeGeneration } from './firestore';
 
 /**
  * Computes an HMAC-SHA256 signature using Web Crypto API
@@ -22,209 +20,44 @@ async function computeHmacSha256(secret: string, message: string): Promise<strin
     .join('');
 }
 
-function base64UrlToBytes(str: string): Uint8Array {
-  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-  while (base64.length % 4) {
-    base64 += '=';
-  }
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
-function decodeBase64UrlJson(str: string): any {
-  const bytes = base64UrlToBytes(str);
-  const jsonStr = new TextDecoder().decode(bytes);
-  return JSON.parse(jsonStr);
-}
-
-interface GoogleJwk {
-  alg: string;
-  kty: string;
-  use: string;
-  n: string;
-  e: string;
-  kid: string;
-}
-
-let cachedGoogleJwks: { keys: GoogleJwk[]; expiresAt: number } | null = null;
-
-async function getGooglePublicJwks(): Promise<GoogleJwk[]> {
-  const now = Date.now();
-  if (cachedGoogleJwks && cachedGoogleJwks.expiresAt > now) {
-    return cachedGoogleJwks.keys;
-  }
-
-  const res = await fetch(
-    'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com'
-  );
-  if (!res.ok) {
-    throw new Error(`Failed to fetch Google JWKS: ${res.status}`);
-  }
-
-  let maxAge = 3600;
-  const cacheControl = res.headers.get('cache-control');
-  if (cacheControl) {
-    const match = cacheControl.match(/max-age=(\d+)/);
-    if (match) {
-      maxAge = parseInt(match[1], 10);
-    }
-  }
-
-  const data = (await res.json()) as { keys: GoogleJwk[] };
-  cachedGoogleJwks = {
-    keys: data.keys,
-    expiresAt: now + maxAge * 1000,
-  };
-  return data.keys;
+/**
+ * Validates imageHash format: must be a hex string of reasonable length
+ */
+function isValidImageHash(hash: string): boolean {
+  return /^[0-9a-fA-F]{16,128}$/.test(hash);
 }
 
 /**
- * Verifies Firebase ID token with Web Crypto RS256 JWKS validation (fast, zero API key restrictions)
- * and falls back to Google Identity Toolkit REST API.
+ * Generates a secure ticket with HMAC signature
  */
-export async function verifyFirebaseToken(
-  idToken: string,
-  expectedProjectId: string = 'vectorizerr',
-  apiKey: string = FIREBASE_API_KEY
-): Promise<{ uid: string; email?: string } | null> {
-  if (!idToken || typeof idToken !== 'string') {
-    return null;
-  }
+async function generateTicket(
+  secret: string,
+  userId: string,
+  imageHash: string,
+  generationsRemaining: number,
+  generationsUsed: number,
+  maxGenerations: number,
+  expiresAt: number,
+  issuedAt: number
+): Promise<{ ticketId: string; nonce: string; signature: string }> {
+  const nonce = crypto.randomUUID();
+  const ticketId = `ticket_${issuedAt}_${nonce.slice(0, 8)}`;
 
-  const parts = idToken.split('.');
-  if (parts.length !== 3) {
-    console.warn('[verifyFirebaseToken] Malformed JWT: Expected 3 parts, got', parts.length);
-    return null;
-  }
+  // Sign canonical JSON of the whole ticket payload
+  const payload = JSON.stringify({
+    ticketId,
+    userId,
+    imageHash,
+    generationsRemaining,
+    generationsUsed,
+    maxGenerations,
+    expiresAt,
+    issuedAt,
+    nonce,
+  });
+  const signature = await computeHmacSha256(secret, payload);
 
-  const [headerB64, payloadB64, signatureB64] = parts;
-
-  // 1. Attempt Cryptographic Web Crypto RS256 Verification against Google JWKS
-  try {
-    const headerJson = decodeBase64UrlJson(headerB64);
-    const payloadJson = decodeBase64UrlJson(payloadB64);
-
-    if (headerJson.alg !== 'RS256') {
-      console.warn('[verifyFirebaseToken] Unsupported algorithm:', headerJson.alg);
-      return null;
-    }
-
-    const kid = headerJson.kid;
-    if (!kid) {
-      console.warn('[verifyFirebaseToken] Missing kid in JWT header');
-      return null;
-    }
-
-    let keys = await getGooglePublicJwks();
-    let matchingKey = keys.find((k) => k.kid === kid);
-
-    // If key not found, refresh cache once in case Google rotated keys
-    if (!matchingKey) {
-      cachedGoogleJwks = null;
-      keys = await getGooglePublicJwks();
-      matchingKey = keys.find((k) => k.kid === kid);
-    }
-
-    if (matchingKey) {
-      const cryptoKey = await crypto.subtle.importKey(
-        'jwk',
-        matchingKey,
-        { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-        false,
-        ['verify']
-      );
-
-      const signedData = new TextEncoder().encode(`${headerB64}.${payloadB64}`);
-      const rawSignature = base64UrlToBytes(signatureB64);
-
-      const isSignatureValid = await crypto.subtle.verify(
-        'RSASSA-PKCS1-v1_5',
-        cryptoKey,
-        rawSignature,
-        signedData
-      );
-
-      if (!isSignatureValid) {
-        console.warn('[verifyFirebaseToken] Signature verification failed');
-        return null;
-      }
-
-      // Check standard claims with 5-minute clock drift tolerance
-      const now = Math.floor(Date.now() / 1000);
-      if (payloadJson.exp && payloadJson.exp < now - 300) {
-        console.warn(`[verifyFirebaseToken] Token is expired (exp: ${payloadJson.exp}, now: ${now})`);
-        return null;
-      }
-
-      if (payloadJson.iat && payloadJson.iat > now + 300) {
-        console.warn('[verifyFirebaseToken] Token issued in future');
-        return null;
-      }
-
-      const expectedAud = expectedProjectId || 'vectorizerr';
-      const audMatches = payloadJson.aud === expectedAud;
-      const issMatches =
-        payloadJson.iss === `https://securetoken.google.com/${expectedAud}` ||
-        (typeof payloadJson.iss === 'string' && payloadJson.iss.endsWith(expectedAud));
-
-      if (!audMatches && !issMatches) {
-        console.warn(
-          `[verifyFirebaseToken] Audience/Issuer mismatch: expected ${expectedAud}, got aud=${payloadJson.aud}, iss=${payloadJson.iss}`
-        );
-        return null;
-      }
-
-      const uid = payloadJson.user_id || payloadJson.sub;
-      if (!uid || typeof uid !== 'string') {
-        console.warn('[verifyFirebaseToken] Missing sub/user_id in payload');
-        return null;
-      }
-
-      return {
-        uid,
-        email: payloadJson.email,
-      };
-    } else {
-      console.warn(`[verifyFirebaseToken] No matching JWK found for kid: ${kid}`);
-    }
-  } catch (jwksErr) {
-    console.warn('[verifyFirebaseToken] JWKS verification error, attempting REST fallback:', jwksErr);
-  }
-
-  // 2. Fallback: Google Identity Toolkit REST API
-  try {
-    const url = `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Referer': 'https://vectorizerr.pages.dev',
-        'Origin': 'https://vectorizerr.pages.dev',
-      },
-      body: JSON.stringify({ idToken }),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      console.warn(`[verifyFirebaseToken] Identity Toolkit failed status ${res.status}: ${errText}`);
-      return null;
-    }
-
-    const data = (await res.json()) as any;
-    if (!data.users || data.users.length === 0) return null;
-
-    return {
-      uid: data.users[0].localId,
-      email: data.users[0].email,
-    };
-  } catch (err) {
-    console.error('[verifyFirebaseToken] Auth verification error:', err);
-    return null;
-  }
+  return { ticketId, nonce, signature };
 }
 
 /**
@@ -234,6 +67,14 @@ export async function handleCryptographicHandshake(
   request: Request,
   env: Env
 ): Promise<Response> {
+  // POST-only check
+  if (request.method !== 'POST') {
+    return new Response(
+      JSON.stringify({ success: false, error: 'Method not allowed' }),
+      { status: 405, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
   // 1. Unified security verification (CORS, API Secret, App Check, Auth Token)
   const security = await verifyWorkerSecurity(request, env, { requireAuth: true });
   if (!security.isValid) {
@@ -243,24 +84,73 @@ export async function handleCryptographicHandshake(
   const corsHeaders = security.corsHeaders;
   const userId = security.user!.uid;
 
+  // Require HANDSHAKE_SECRET - fail closed if missing
+  const secret = env.HANDSHAKE_SECRET;
+  if (!secret) {
+    console.error('[Handshake] HANDSHAKE_SECRET is not configured, failing closed');
+    return new Response(
+      JSON.stringify({ success: false, error: 'Server configuration error' }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+
   try {
     const body = (await request.json().catch(() => ({}))) as any;
     const { action, imageHash } = body;
 
-    if (!imageHash) {
+    if (!imageHash || !isValidImageHash(imageHash)) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Missing imageHash.' }),
+        JSON.stringify({ success: false, error: 'Missing or invalid imageHash.' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const projectId = env.FIREBASE_PROJECT_ID || 'vectorizerr';
-    const secret = env.FIREBASE_PRIVATE_KEY || DEFAULT_SECRET;
+    if (!action || (action !== 'unlock_image' && action !== 'consume_generation')) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Invalid action.' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
-    // Fetch user doc from Firestore
+    const projectId = env.FIREBASE_PROJECT_ID;
+    if (!projectId) {
+      console.error('[Handshake] FIREBASE_PROJECT_ID is not configured');
+      return new Response(
+        JSON.stringify({ success: false, error: 'Server configuration error' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Get access token for authenticated Firestore calls
+    const accessToken = await getGoogleAccessToken(
+      env.FIREBASE_CLIENT_EMAIL,
+      env.FIREBASE_PRIVATE_KEY
+    );
+    if (!accessToken) {
+      console.error('[Handshake] Failed to obtain Firestore access token');
+      return new Response(
+        JSON.stringify({ success: false, error: 'Server configuration error' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Fetch user doc from Firestore with auth
     const userUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}`;
-    const userRes = await fetch(userUrl);
-    const userData = userRes.ok ? ((await userRes.json()) as any) : null;
+    const userRes = await fetch(userUrl, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!userRes.ok) {
+      console.error(`[Handshake] Failed to fetch user doc: ${userRes.status}`);
+      return new Response(
+        JSON.stringify({ success: false, error: 'Failed to load user data.' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const userData = (await userRes.json()) as any;
     const fields = userData?.fields || {};
 
     const credits = fields.credits?.integerValue ? Number(fields.credits.integerValue) : 0;
@@ -278,15 +168,15 @@ export async function handleCryptographicHandshake(
     const remainingGens = Math.max(0, maxGenerations - generationsUsed);
 
     const now = Date.now();
-    const expiresAt = now + 86400000 * 30; // 30 days
-    const nonce = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-    const ticketId = `ticket_${now}_${nonce.slice(0, 8)}`;
+    // Tickets are short-lived: 1 hour instead of 30 days
+    const expiresAt = now + 3600000;
 
     if (action === 'unlock_image') {
       if (isAdmin || isSubscribed || (existingUnlock && remainingGens > 0)) {
         const quota = isAdmin || isSubscribed ? 9999 : remainingGens;
-        const msg = `${ticketId}:${userId}:${imageHash}:${quota}:${expiresAt}:${nonce}`;
-        const signature = await computeHmacSha256(secret, msg);
+        const { ticketId, nonce, signature } = await generateTicket(
+          secret, userId, imageHash, quota, generationsUsed, quota, expiresAt, now
+        );
 
         return new Response(
           JSON.stringify({
@@ -321,37 +211,20 @@ export async function handleCryptographicHandshake(
         );
       }
 
-      // Deduct 1 credit & unlock image for 10 generations in Firestore
-      const newCredits = credits - 1;
-      const updatedUnlocked = {
-        ...unlockedImages,
-        [imageHash]: {
-          mapValue: {
-            fields: {
-              imageHash: { stringValue: imageHash },
-              generationsUsed: { integerValue: '0' },
-              maxGenerations: { integerValue: '10' },
-              unlockedAt: { integerValue: String(now) },
-            },
-          },
-        },
-      };
+      // Atomic commit: decrement credits and set unlock entry in one transaction
+      const writeSuccess = await atomicUnlockImage(projectId, accessToken, userId, imageHash, now);
+      if (!writeSuccess) {
+        console.error('[Handshake] Atomic unlock commit failed');
+        return new Response(
+          JSON.stringify({ success: false, error: 'Failed to save unlock data.' }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
 
-      const patchUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}?updateMask.fieldPaths=credits&updateMask.fieldPaths=unlockedImages&updateMask.fieldPaths=updatedAt`;
-      await fetch(patchUrl, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fields: {
-            credits: { integerValue: String(newCredits) },
-            unlockedImages: { mapValue: { fields: updatedUnlocked } },
-            updatedAt: { timestampValue: new Date().toISOString() },
-          },
-        }),
-      });
-
-      const msg = `${ticketId}:${userId}:${imageHash}:10:${expiresAt}:${nonce}`;
-      const signature = await computeHmacSha256(secret, msg);
+      // Only issue ticket after successful write
+      const { ticketId, nonce, signature } = await generateTicket(
+        secret, userId, imageHash, 10, 0, 10, expiresAt, now
+      );
 
       return new Response(
         JSON.stringify({
@@ -369,14 +242,15 @@ export async function handleCryptographicHandshake(
             signature,
           },
           generationsRemaining: 10,
-          creditsRemaining: newCredits,
+          creditsRemaining: credits - 1,
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     } else if (action === 'consume_generation') {
       if (isAdmin || isSubscribed) {
-        const msg = `${ticketId}:${userId}:${imageHash}:9999:${expiresAt}:${nonce}`;
-        const signature = await computeHmacSha256(secret, msg);
+        const { ticketId, nonce, signature } = await generateTicket(
+          secret, userId, imageHash, 9999, 0, 9999, expiresAt, now
+        );
         return new Response(
           JSON.stringify({
             success: true,
@@ -406,37 +280,23 @@ export async function handleCryptographicHandshake(
         );
       }
 
+      // Atomic commit: increment generationsUsed in one transaction
+      const writeSuccess = await atomicConsumeGeneration(projectId, accessToken, userId, imageHash);
+      if (!writeSuccess) {
+        console.error('[Handshake] Atomic consume generation commit failed');
+        return new Response(
+          JSON.stringify({ success: false, error: 'Failed to save generation data.' }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
       const newGenerationsUsed = generationsUsed + 1;
       const updatedRemaining = Math.max(0, maxGenerations - newGenerationsUsed);
 
-      const updatedUnlocked = {
-        ...unlockedImages,
-        [imageHash]: {
-          mapValue: {
-            fields: {
-              imageHash: { stringValue: imageHash },
-              generationsUsed: { integerValue: String(newGenerationsUsed) },
-              maxGenerations: { integerValue: String(maxGenerations) },
-              unlockedAt: { integerValue: existingUnlock?.unlockedAt?.integerValue || String(now) },
-            },
-          },
-        },
-      };
-
-      const patchUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}?updateMask.fieldPaths=unlockedImages&updateMask.fieldPaths=updatedAt`;
-      await fetch(patchUrl, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fields: {
-            unlockedImages: { mapValue: { fields: updatedUnlocked } },
-            updatedAt: { timestampValue: new Date().toISOString() },
-          },
-        }),
-      });
-
-      const msg = `${ticketId}:${userId}:${imageHash}:${updatedRemaining}:${expiresAt}:${nonce}`;
-      const signature = await computeHmacSha256(secret, msg);
+      // Only issue ticket after successful write
+      const { ticketId, nonce, signature } = await generateTicket(
+        secret, userId, imageHash, updatedRemaining, newGenerationsUsed, maxGenerations, expiresAt, now
+      );
 
       return new Response(
         JSON.stringify({
@@ -461,12 +321,14 @@ export async function handleCryptographicHandshake(
     }
 
     return new Response(
-      JSON.stringify({ success: false, error: `Unsupported action: ${action}` }),
+      JSON.stringify({ success: false, error: 'Invalid action.' }),
       { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
-  } catch (err: any) {
+  } catch (err) {
+    console.error('[Handshake] Internal error:', err);
+    // Don't leak error details to the client
     return new Response(
-      JSON.stringify({ success: false, error: err.message }),
+      JSON.stringify({ success: false, error: 'Internal server error' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }

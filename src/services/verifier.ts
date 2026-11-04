@@ -7,7 +7,7 @@ import {
   SupportedChainKey,
   SupportedToken,
 } from "../config/chains";
-import { findWalletAddress, isValidWalletAddress } from "../config/wallets";
+import { isValidWalletAddress } from "../config/wallets";
 import { CryptoTransactionDoc } from "./firestore";
 
 export interface VerificationResult {
@@ -97,7 +97,7 @@ async function verifyEvmTransaction(
 ): Promise<VerificationResult> {
   try {
     // SECURITY: Validate that recipient is a configured wallet address
-    if (!isValidWalletAddress(isTestnet, expectedRecipient)) {
+    if (!isValidWalletAddress(expectedRecipient)) {
       return {
         isConfirmed: false,
         isFailed: true,
@@ -287,7 +287,7 @@ async function verifyBtcTransaction(
   isTestnet: boolean,
 ): Promise<VerificationResult> {
   // SECURITY: Validate that recipient is a configured wallet address
-  if (!isValidWalletAddress(isTestnet, expectedRecipient)) {
+  if (!isValidWalletAddress(expectedRecipient)) {
     return {
       isConfirmed: false,
       isFailed: true,
@@ -428,7 +428,6 @@ async function verifyBtcTransaction(
  */
 export async function verifyCryptoTransaction(
   tx: CryptoTransactionDoc,
-  isTestnet: boolean,
 ): Promise<VerificationResult> {
   if (tx.chainKey === "btc") {
     return await verifyBtcTransaction(
@@ -436,11 +435,10 @@ export async function verifyCryptoTransaction(
       tx.toAddress,
       tx.cryptoAmount,
       tx.createdAt,
-      isTestnet,
+      false,
     );
   }
 
-  // EVM chains require txHash for precise receipt verification
   if (!tx.txHash || !tx.txHash.startsWith("0x")) {
     return {
       isConfirmed: false,
@@ -450,7 +448,7 @@ export async function verifyCryptoTransaction(
   }
 
   return await verifyEvmTransaction(
-    isTestnet,
+    false,
     tx.chainKey,
     tx.txHash,
     tx.toAddress,

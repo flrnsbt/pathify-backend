@@ -2,7 +2,7 @@ import {
   getGoogleAccessToken,
   getPendingTransactions,
   updateTransactionDoc,
-  incrementUserCredits,
+  confirmAndCreditAtomically,
   createSupportTicketDoc,
   createTransactionDoc,
   createHistoryDoc,
@@ -12,8 +12,9 @@ import { handleCryptographicHandshake } from "./services/handshake";
 import { sendSupportNotificationEmail } from "./services/email";
 import { verifyWorkerSecurity } from "./services/security";
 import type { TransactionScheduler } from "./services/scheduler";
-import { getChainsConfig } from "./config/chains";
-import { getWalletAddresses, isTestnetMode } from "./config/wallets";
+import { getChainsConfig, SupportedChainKey, SupportedToken } from "./config/chains";
+import { getWalletAddresses, findWalletAddress } from "./config/wallets";
+import { CREDIT_PACKS, findPackById, getTokenPriceUsd, calculateCryptoAmount } from "./config/packs";
 
 export { TransactionScheduler } from "./services/scheduler";
 
@@ -22,9 +23,9 @@ export interface Env {
   FIREBASE_PROJECT_ID?: string;
   FIREBASE_CLIENT_EMAIL?: string;
   FIREBASE_PRIVATE_KEY?: string;
+  HANDSHAKE_SECRET?: string;
   API_SECRET?: string;
   SUPPORT_EMAIL?: string;
-  TESTNET_SECRET?: string;
   TRANSACTION_SCHEDULER?: DurableObjectNamespace<TransactionScheduler>;
 }
 
@@ -57,7 +58,7 @@ export function getCorsHeaders(request: Request): Record<string, string> {
     ...(isAllowed ? { "Access-Control-Allow-Origin": origin } : {}),
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers":
-      "Content-Type, Authorization, x-api-secret, X-Firebase-AppCheck, x-testnet-secret",
+      "Content-Type, Authorization, x-api-secret, X-Firebase-AppCheck",
     Vary: "Origin",
   };
 }
@@ -94,39 +95,39 @@ export async function processPendingTransactions(
 
   for (const tx of pending) {
     try {
-      // Use per-transaction isTestnet flag for verification
-      const verification = await verifyCryptoTransaction(tx, Boolean(tx.isTestnet));
+      const verification = await verifyCryptoTransaction(tx);
 
       if (verification.isConfirmed) {
         const confirmedAt = Date.now();
         const finalTxHash = verification.actualTxHash || tx.txHash;
 
-        // 1. Mark transaction confirmed in Firestore
-        await updateTransactionDoc(projectId, accessToken, tx.id, {
-          status: "confirmed",
-          confirmedAt,
-          txHash: finalTxHash,
-          statusMessage: verification.statusMessage,
-          updatedAt: confirmedAt,
-        });
-
-        // 2. Increment user credits in Firestore
-        await incrementUserCredits(
+        // Atomic commit: mark confirmed AND increment credits in one transaction
+        const success = await confirmAndCreditAtomically(
           projectId,
           accessToken,
+          tx.id,
           tx.userId,
           tx.credits,
+          confirmedAt,
+          finalTxHash,
+          verification.statusMessage,
         );
 
-        confirmed.push({
-          id: tx.id,
-          txHash: finalTxHash,
-          credits: tx.credits,
-        });
+        if (success) {
+          confirmed.push({
+            id: tx.id,
+            txHash: finalTxHash,
+            credits: tx.credits,
+          });
 
-        console.log(
-          `[CONFIRMED] Tx ${tx.id} for user ${tx.userId} (+${tx.credits} credits)`,
-        );
+          console.log(
+            `[CONFIRMED] Tx ${tx.id} for user ${tx.userId} (+${tx.credits} credits)`,
+          );
+        } else {
+          console.warn(
+            `[SKIP] Tx ${tx.id} atomic commit failed (may have been processed by another run)`,
+          );
+        }
       } else if (verification.isFailed) {
         await updateTransactionDoc(projectId, accessToken, tx.id, {
           status: "failed",
@@ -209,7 +210,6 @@ export default {
 
   /**
    * HTTP Fetch Handler
-   * Responds to client queries, on-demand refresh triggers, and health checks
    */
   async fetch(
     request: Request,
@@ -217,135 +217,67 @@ export default {
     ctx: ExecutionContext,
   ): Promise<Response> {
     const url = new URL(request.url);
-
     const corsHeaders = getCorsHeaders(request);
 
-    // Handle CORS preflight
     if (request.method === "OPTIONS") {
       const origin = request.headers.get("Origin");
       if (origin && !ALLOWED_ORIGINS.includes(origin)) {
         return new Response("CORS origin not allowed", { status: 403 });
       }
-      return new Response(null, {
-        status: 204,
-        headers: corsHeaders,
-      });
+      return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // Health check endpoint
-    if (url.pathname === "/" || url.pathname === "/health") {
-      return new Response(
-        JSON.stringify({
-          status: "online",
-          service: "vectorizerr-backend-worker",
-          engine: "Cloudflare Workers (Edge)",
-          cronSchedule: "* * * * *",
-          timestamp: new Date().toISOString(),
-          projectId: env.FIREBASE_PROJECT_ID || "vectorizerr",
-          authConfigured: Boolean(
-            env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY,
-          ),
-        }),
-        {
-          status: 200,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-          },
-        },
-      );
-    }
+    const isTestnet = env.ENVIRONMENT !== "production";
 
-    const requestTestnetSecret = url.searchParams.get("x-testnet-secret") || "";
-    const isTestnet = isTestnetMode(env, requestTestnetSecret);
-
-    // Helper for later endpoints that need testnet validation from header
-    const headerTestnetSecret = request.headers.get("x-testnet-secret") || "";
-    const isTestnetFromHeader = isTestnetMode(env, headerTestnetSecret);
+    // Config endpoint: returns packs, live prices, chains, and wallets
     if (url.pathname === "/api/config") {
-      const chainsConfig = getChainsConfig(isTestnet);
-      const wallets = getWalletAddresses(isTestnet);
+      const chainsConfig = getChainsConfig(false);
+      const wallets = getWalletAddresses();
+
+      // Build price map for all tokens across all chains
+      const tokenSymbols = new Set<SupportedToken>();
+      Object.values(chainsConfig).forEach((chain) => chain.tokens.forEach((t) => tokenSymbols.add(t)));
+      const prices: Record<string, number | null> = {};
+      for (const sym of tokenSymbols) {
+        prices[sym] = await getTokenPriceUsd(sym);
+      }
+
+      // Build pack info with crypto amounts per chain/token
+      const packs = CREDIT_PACKS.map((pack) => {
+        const cryptoAmounts: Record<string, string | null> = {};
+        for (const sym of tokenSymbols) {
+          cryptoAmounts[sym] = calculateCryptoAmount(pack.usdPrice, sym, prices[sym]);
+        }
+        return { ...pack, cryptoAmounts };
+      });
 
       return new Response(
-        JSON.stringify({
-          chains: chainsConfig,
-          wallets,
-          isTestnet: isTestnet,
-        }),
-        {
-          status: 200,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-          },
-        },
+        JSON.stringify({ packs, prices, chains: chainsConfig, wallets, isTestnet }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    // Cryptographic Server Handshake endpoint (protects vectorizing authorization)
-    if (
-      url.pathname === "/api/handshake" ||
-      url.pathname === "/api/handshake/authorize"
-    ) {
+    // Cryptographic Server Handshake
+    if (url.pathname === "/api/handshake") {
       return await handleCryptographicHandshake(request, env);
     }
 
-    // On-demand refresh endpoint
-    if (
-      url.pathname === "/api/refresh-credits" ||
-      url.pathname === "/api/check-transactions"
-    ) {
+    // Refresh credits endpoint
+    if (url.pathname === "/api/refresh-credits") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
-          status: 405,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Centralized security validation (API secret, App Check, optional Auth token)
-      const security = await verifyWorkerSecurity(request, env, {
-        requireAuth: false,
-      });
-      if (!security.isValid) {
-        return security.errorResponse!;
-      }
+      const security = await verifyWorkerSecurity(request, env, { requireAuth: true });
+      if (!security.isValid) return security.errorResponse!;
 
-      let userIdFilter: string | undefined;
-      try {
-        const body = (await request.json().catch(() => ({}))) as {
-          userId?: string;
-        };
-        userIdFilter = body.userId;
-      } catch {}
-
-      // If user is authenticated, ensure they cannot query another user's balance
-      if (security.user) {
-        if (userIdFilter && userIdFilter !== security.user.uid) {
-          return new Response(
-            JSON.stringify({
-              error: "Forbidden: Cannot refresh credits for another user",
-            }),
-            {
-              status: 403,
-              headers: {
-                ...security.corsHeaders,
-                "Content-Type": "application/json",
-              },
-            },
-          );
-        }
-        userIdFilter = security.user.uid;
-      }
-
-      // 1. Activate lazy tracking window
       activateTransactionTracking();
 
-      // 2. Arm Durable Object alarm scheduler if bound
       if (env.TRANSACTION_SCHEDULER) {
         try {
-          const id = env.TRANSACTION_SCHEDULER.idFromName(
-            "global_transaction_scheduler",
-          );
+          const id = env.TRANSACTION_SCHEDULER.idFromName("global_transaction_scheduler");
           const stub = env.TRANSACTION_SCHEDULER.get(id);
           ctx.waitUntil(stub.fetch(new Request("http://internal/trigger")));
         } catch (err) {
@@ -353,198 +285,93 @@ export default {
         }
       }
 
-      const result = await processPendingTransactions(env, userIdFilter);
+      const result = await processPendingTransactions(env, security.user!.uid);
 
-      // If all transactions are resolved, deactivate lazy tracking immediately
-      if (result.pendingCount === 0) {
-        deactivateTransactionTracking();
-      }
+      if (result.pendingCount === 0) deactivateTransactionTracking();
 
       return new Response(
-        JSON.stringify({
-          success: true,
-          timestamp: new Date().toISOString(),
-          ...result,
-        }),
-        {
-          status: 200,
-          headers: {
-            ...security.corsHeaders,
-            "Content-Type": "application/json",
-          },
-        },
+        JSON.stringify({ success: true, timestamp: new Date().toISOString(), ...result }),
+        { status: 200, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    // Lazy Transaction Tracking trigger endpoint (called when a new tx is written)
-    if (
-      url.pathname === "/api/track-transaction" ||
-      url.pathname === "/api/schedule-check"
-    ) {
-      if (request.method !== "POST") {
-        return new Response(JSON.stringify({ error: "Method not allowed" }), {
-          status: 405,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      const security = await verifyWorkerSecurity(request, env, {
-        requireAuth: false,
-      });
-      if (!security.isValid) {
-        return security.errorResponse!;
-      }
-
-      // Activate tracking window
-      activateTransactionTracking();
-
-      // If Durable Object is bound, arm alarm for 15s
-      let doStatus = "unbound";
-      if (env.TRANSACTION_SCHEDULER) {
-        try {
-          const id = env.TRANSACTION_SCHEDULER.idFromName(
-            "global_transaction_scheduler",
-          );
-          const stub = env.TRANSACTION_SCHEDULER.get(id);
-          ctx.waitUntil(stub.fetch(new Request("http://internal/trigger")));
-          doStatus = "armed";
-        } catch (err) {
-          console.warn("[Scheduler] DO trigger error:", err);
-        }
-      }
-
-      return new Response(
-        JSON.stringify({
-          success: true,
-          trackingActive: true,
-          durableObjectScheduler: doStatus,
-          message:
-            "Transaction tracking activated. Checks will run lazily until confirmed.",
-        }),
-        {
-          status: 200,
-          headers: {
-            ...security.corsHeaders,
-            "Content-Type": "application/json",
-          },
-        },
-      );
-    }
-
-    // Create Transaction endpoint (writes to transactions collection with service account auth)
+    // Create Transaction endpoint - body: { packId, chainKey, txHash }
     if (url.pathname === "/api/create-transaction") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
-          status: 405,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Security validation: verify API Secret, App Check, and optional Auth token
-      const security = await verifyWorkerSecurity(request, env, {
-        requireAuth: false,
-      });
-      if (!security.isValid) {
-        return security.errorResponse!;
-      }
+      const security = await verifyWorkerSecurity(request, env, { requireAuth: true });
+      if (!security.isValid) return security.errorResponse!;
 
-      let body: any = {};
+      let body: { packId: string; chainKey: SupportedChainKey; txHash: string; cryptoToken?: SupportedToken } = {} as any;
       try {
         body = await request.json();
       } catch {
-        return new Response(
-          JSON.stringify({ error: "Invalid JSON request body" }),
-          {
-            status: 400,
-            headers: {
-              ...security.corsHeaders,
-              "Content-Type": "application/json",
-            },
-          },
-        );
+        return new Response(JSON.stringify({ error: "Invalid JSON" }), {
+          status: 400, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
-      const userId = (body.userId || security.user?.uid || "").trim();
-      if (!userId) {
-        return new Response(
-          JSON.stringify({ error: "Missing required userId field" }),
-          {
-            status: 400,
-            headers: {
-              ...security.corsHeaders,
-              "Content-Type": "application/json",
-            },
-          },
-        );
+      if (!body.packId || !body.chainKey || !body.txHash) {
+        return new Response(JSON.stringify({ error: "Missing packId, chainKey, or txHash" }), {
+          status: 400, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
-      // Prevent user impersonation: if authenticated, verify userId matches
-      if (security.user && security.user.uid !== userId) {
-        return new Response(
-          JSON.stringify({
-            error: "Forbidden: Cannot create transaction for another user",
-          }),
-          {
-            status: 403,
-            headers: {
-              ...security.corsHeaders,
-              "Content-Type": "application/json",
-            },
-          },
-        );
+      const pack = findPackById(body.packId);
+      if (!pack) {
+        return new Response(JSON.stringify({ error: "Invalid packId" }), {
+          status: 400, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
-      const projectId = env.FIREBASE_PROJECT_ID || "vectorizerr";
-      const accessToken = await getGoogleAccessToken(
-        env.FIREBASE_CLIENT_EMAIL,
-        env.FIREBASE_PRIVATE_KEY,
-      );
-
-      // Validate testnet mode: only allow testnet transactions when TESTNET_SECRET matches
-      const txIsTestnet = body.isTestnet === true || body.isTestnet === 'true';
-      if (txIsTestnet && !isTestnetFromHeader) {
-        return new Response(
-          JSON.stringify({ error: "Testnet transactions require valid x-testnet-secret header" }),
-          {
-            status: 403,
-            headers: {
-              ...security.corsHeaders,
-              "Content-Type": "application/json",
-            },
-          },
-        );
+      const chainConfig = getChainsConfig(false)[body.chainKey];
+      if (!chainConfig) {
+        return new Response(JSON.stringify({ error: "Invalid chainKey" }), {
+          status: 400, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
       }
+
+      const cryptoToken = (body.cryptoToken || chainConfig.nativeToken) as SupportedToken;
+      const tokenPrice = await getTokenPriceUsd(cryptoToken);
+      const cryptoAmount = calculateCryptoAmount(pack.usdPrice, cryptoToken, tokenPrice);
+      if (!cryptoAmount) {
+        return new Response(JSON.stringify({ error: "Unable to calculate crypto amount" }), {
+          status: 503, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const toAddress = findWalletAddress(body.chainKey, cryptoToken, chainConfig.chainId) || "";
+      if (!toAddress) {
+        return new Response(JSON.stringify({ error: "No wallet configured for this chain/token" }), {
+          status: 503, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const projectId = env.FIREBASE_PROJECT_ID as string;
+      const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
 
       const txId = await createTransactionDoc(projectId, accessToken, {
-        id: body.id,
-        userId,
-        userEmail: body.userEmail || security.user?.email,
-        packId: body.packId || "custom",
-        credits: Number(body.credits) || 0,
-        usdPrice: Number(body.usdPrice) || 0,
-        cryptoAmount: String(body.cryptoAmount || "0"),
-        cryptoToken: body.cryptoToken || "USDT",
-        chainKey: body.chainKey || "bsc",
-        chainId: body.chainId ? Number(body.chainId) : undefined,
-        paymentMethod: body.paymentMethod || "web3",
-        fromAddress: body.fromAddress,
-        toAddress: body.toAddress || "",
+        userId: security.user!.uid,
+        userEmail: security.user?.email,
+        packId: pack.id,
+        credits: pack.credits,
+        usdPrice: pack.usdPrice,
+        cryptoAmount,
+        cryptoToken,
+        chainKey: body.chainKey,
+        chainId: chainConfig.chainId,
+        toAddress,
         txHash: body.txHash,
-        status: body.status || "pending",
-        statusMessage:
-          body.statusMessage || "Awaiting blockchain confirmation.",
-        createdAt: body.createdAt || Date.now(),
-        updatedAt: body.updatedAt || Date.now(),
-        isTestnet: txIsTestnet,
       });
 
-      // Trigger lazy tracking scheduler
       activateTransactionTracking();
       if (env.TRANSACTION_SCHEDULER) {
         try {
-          const id = env.TRANSACTION_SCHEDULER.idFromName(
-            "global_transaction_scheduler",
-          );
+          const id = env.TRANSACTION_SCHEDULER.idFromName("global_transaction_scheduler");
           const stub = env.TRANSACTION_SCHEDULER.get(id);
           ctx.waitUntil(stub.fetch(new Request("http://internal/trigger")));
         } catch (err) {
@@ -553,231 +380,102 @@ export default {
       }
 
       return new Response(
-        JSON.stringify({
-          success: true,
-          transactionId: txId,
-          status: "pending",
-          message: "Transaction created successfully on server and tracked.",
-        }),
-        {
-          status: 201,
-          headers: {
-            ...security.corsHeaders,
-            "Content-Type": "application/json",
-          },
-        },
+        JSON.stringify({ success: true, transactionId: txId, expectedAmount: cryptoAmount, toAddress }),
+        { status: 201, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    // Save History endpoint (writes to users/{userId}/history with service account auth)
+    // Save History endpoint - body: { imageHash, svg }
     if (url.pathname === "/api/save-history") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
-          status: 405,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Security validation: verify API Secret, App Check, and optional Auth token
-      const security = await verifyWorkerSecurity(request, env, {
-        requireAuth: false,
-      });
-      if (!security.isValid) {
-        return security.errorResponse!;
-      }
+      const security = await verifyWorkerSecurity(request, env, { requireAuth: true });
+      if (!security.isValid) return security.errorResponse!;
 
-      let body: any = {};
+      let body: { imageHash: string; svg: string } = {} as any;
       try {
         body = await request.json();
       } catch {
-        return new Response(
-          JSON.stringify({ error: "Invalid JSON request body" }),
-          {
-            status: 400,
-            headers: {
-              ...security.corsHeaders,
-              "Content-Type": "application/json",
-            },
-          },
-        );
+        return new Response(JSON.stringify({ error: "Invalid JSON" }), {
+          status: 400, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
-      const userId = (body.userId || security.user?.uid || "").trim();
-      if (!userId) {
-        return new Response(
-          JSON.stringify({ error: "Missing required userId field" }),
-          {
-            status: 400,
-            headers: {
-              ...security.corsHeaders,
-              "Content-Type": "application/json",
-            },
-          },
-        );
+      if (!body.svg || !body.imageHash) {
+        return new Response(JSON.stringify({ error: "Missing imageHash or svg" }), {
+          status: 400, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
-      // Prevent writing to another user's history
-      if (security.user && security.user.uid !== userId) {
-        return new Response(
-          JSON.stringify({
-            error: "Forbidden: Cannot write history for another user",
-          }),
-          {
-            status: 403,
-            headers: {
-              ...security.corsHeaders,
-              "Content-Type": "application/json",
-            },
-          },
-        );
-      }
-
-      if (!body.svg) {
-        return new Response(
-          JSON.stringify({ error: "Missing required svg field" }),
-          {
-            status: 400,
-            headers: {
-              ...security.corsHeaders,
-              "Content-Type": "application/json",
-            },
-          },
-        );
-      }
-
-      const projectId = env.FIREBASE_PROJECT_ID || "vectorizerr";
-      const accessToken = await getGoogleAccessToken(
-        env.FIREBASE_CLIENT_EMAIL,
-        env.FIREBASE_PRIVATE_KEY,
-      );
+      const projectId = env.FIREBASE_PROJECT_ID as string;
+      const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
 
       const historyId = await createHistoryDoc(projectId, accessToken, {
-        id: body.id,
-        userId,
-        fileName: body.fileName || "vectorization.svg",
-        originalDimensions: body.originalDimensions,
-        originalSize: body.originalSize ? Number(body.originalSize) : undefined,
-        originalBase64: body.originalBase64,
+        userId: security.user!.uid,
         imageHash: body.imageHash,
-        nodeCount:
-          body.nodeCount !== undefined ? Number(body.nodeCount) : undefined,
-        executionTimeMs:
-          body.executionTimeMs !== undefined
-            ? Number(body.executionTimeMs)
-            : undefined,
-        parameters: body.parameters,
         svg: body.svg,
-        svgSize: body.svgSize ? Number(body.svgSize) : undefined,
-        createdAt: body.createdAt || Date.now(),
       });
 
       return new Response(
-        JSON.stringify({
-          success: true,
-          historyId,
-          message: "History entry saved successfully on server.",
-        }),
-        {
-          status: 201,
-          headers: {
-            ...security.corsHeaders,
-            "Content-Type": "application/json",
-          },
-        },
+        JSON.stringify({ success: true, historyId }),
+        { status: 201, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    // Contact & Support Inquiry endpoint (sends email to SUPPORT_EMAIL safely)
-    if (url.pathname === "/api/support" || url.pathname === "/api/contact") {
+    // Support endpoint
+    if (url.pathname === "/api/support") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
-          status: 405,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Centralized security validation (API secret, App Check, optional Auth token)
-      const security = await verifyWorkerSecurity(request, env, {
-        requireAuth: false,
-      });
-      if (!security.isValid) {
-        return security.errorResponse!;
-      }
+      const security = await verifyWorkerSecurity(request, env, { requireApiSecret: false });
+      if (!security.isValid) return security.errorResponse!;
 
-      // Parse & validate request payload
-      let body: any = {};
+      let body: { email?: string; message?: string; category?: string; subject?: string; name?: string; txHash?: string } = {} as any;
       try {
         body = await request.json();
       } catch {
-        return new Response(
-          JSON.stringify({ error: "Invalid JSON request body" }),
-          {
-            status: 400,
-            headers: {
-              ...security.corsHeaders,
-              "Content-Type": "application/json",
-            },
-          },
-        );
+        return new Response(JSON.stringify({ error: "Invalid JSON" }), {
+          status: 400, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
-      const authenticatedUserId = security.user?.uid;
-      const authenticatedUserEmail = security.user?.email;
-
-      const userEmail = (body.email || authenticatedUserEmail || "").trim();
+      const userEmail = (body.email || security.user?.email || "").trim();
       const message = (body.message || "").trim();
-      const category = (body.category || "crypto_transaction").trim();
-      const subject = (body.subject || "").trim();
-      const name = (body.name || "").trim();
-      const txHash = (body.txHash || "").trim();
-      const chainKey = (body.chainKey || "").trim();
-      const walletAddress = (body.walletAddress || "").trim();
 
       if (!userEmail || !userEmail.includes("@")) {
-        return new Response(
-          JSON.stringify({ error: "A valid email address is required" }),
-          {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          },
-        );
+        return new Response(JSON.stringify({ error: "Valid email required" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
       if (!message || message.length < 5) {
-        return new Response(
-          JSON.stringify({
-            error: "Please provide a detailed message (minimum 5 characters)",
-          }),
-          {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          },
-        );
+        return new Response(JSON.stringify({ error: "Message too short" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
-      // Generate support ticket ID
-      const ticketId =
-        "VZ-" +
-        Math.random().toString(36).substring(2, 8).toUpperCase() +
-        "-" +
-        Date.now().toString(36).slice(-3).toUpperCase();
+      const ticketId = "VZ-" + crypto.randomUUID().slice(0, 6).toUpperCase() + "-" + Date.now().toString(36).slice(-4).toUpperCase();
 
       const ticketData = {
         id: ticketId,
-        userId: authenticatedUserId || body.userId,
+        userId: security.user?.uid,
         userEmail,
-        name: name || undefined,
-        category,
-        subject: subject || undefined,
+        name: (body.name || "").trim() || undefined,
+        category: (body.category || "general").trim(),
+        subject: (body.subject || "").trim() || undefined,
         message,
-        txHash: txHash || undefined,
-        chainKey: chainKey || undefined,
-        walletAddress: walletAddress || undefined,
+        txHash: (body.txHash || "").trim() || undefined,
         status: "open" as const,
         createdAt: Date.now(),
       };
 
-      // 5. Send email notification to SUPPORT_EMAIL safely
       const targetSupportEmail = env.SUPPORT_EMAIL as string;
       const meta = {
         ip: request.headers.get("cf-connecting-ip") || undefined,
@@ -785,48 +483,28 @@ export default {
         userAgent: request.headers.get("user-agent") || undefined,
       };
 
-      const emailResult = await sendSupportNotificationEmail(
-        targetSupportEmail,
-        ticketData,
-        meta,
-      );
+      const emailResult = await sendSupportNotificationEmail(targetSupportEmail, ticketData, meta);
 
-      // 6. Record ticket in Firestore for audit & durability
       if (env.FIREBASE_PROJECT_ID) {
         try {
-          const accessToken = await getGoogleAccessToken(
-            env.FIREBASE_CLIENT_EMAIL,
-            env.FIREBASE_PRIVATE_KEY,
-          );
+          const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
           await createSupportTicketDoc(env.FIREBASE_PROJECT_ID, accessToken, {
             ...ticketData,
             emailSent: emailResult.success,
           });
         } catch (dbErr) {
-          console.error("[Support] Error storing ticket in Firestore:", dbErr);
+          console.error("[Support] Firestore error:", dbErr);
         }
       }
 
       return new Response(
-        JSON.stringify({
-          success: true,
-          ticketId,
-          message:
-            "Support ticket submitted successfully. Our assistance team will review your inquiry shortly.",
-        }),
-        {
-          status: 200,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-          },
-        },
+        JSON.stringify({ success: true, ticketId }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
     return new Response(JSON.stringify({ error: "Not found" }), {
-      status: 404,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   },
 };

@@ -11,16 +11,13 @@ export interface CryptoTransactionDoc {
   cryptoToken: SupportedToken;
   chainKey: SupportedChainKey;
   chainId?: number;
-  paymentMethod: 'web3' | 'direct';
-  fromAddress?: string;
   toAddress: string;
-  txHash?: string;
+  txHash: string;
   status: 'pending' | 'confirmed' | 'failed' | 'cancelled';
   statusMessage?: string;
   createdAt: number;
   updatedAt: number;
   confirmedAt?: number;
-  isTestnet?: boolean;
 }
 
 let cachedAccessToken: string | null = null;
@@ -271,16 +268,13 @@ export async function getPendingTransactions(
         cryptoToken: parsed.cryptoToken || 'USDT',
         chainKey: parsed.chainKey || 'bsc',
         chainId: parsed.chainId,
-        paymentMethod: parsed.paymentMethod || 'web3',
-        fromAddress: parsed.fromAddress,
         toAddress: parsed.toAddress || '',
-        txHash: parsed.txHash,
+        txHash: parsed.txHash || '',
         status: parsed.status || 'pending',
         statusMessage: parsed.statusMessage,
         createdAt: parsed.createdAt || Date.now(),
         updatedAt: parsed.updatedAt || Date.now(),
         confirmedAt: parsed.confirmedAt,
-        isTestnet: Boolean(parsed.isTestnet),
       });
     }
 
@@ -453,7 +447,6 @@ export async function createSupportTicketDoc(
 }
 
 export interface CreateTransactionInput {
-  id?: string;
   userId: string;
   userEmail?: string;
   packId: string;
@@ -463,20 +456,13 @@ export interface CreateTransactionInput {
   cryptoToken: string;
   chainKey: string;
   chainId?: number;
-  paymentMethod: 'web3' | 'direct';
-  fromAddress?: string;
   toAddress: string;
-  txHash?: string;
-  status?: 'pending' | 'confirmed' | 'failed' | 'cancelled';
-  statusMessage?: string;
-  createdAt?: number;
-  updatedAt?: number;
-  isTestnet?: boolean;
+  txHash: string;
 }
 
 /**
- * Creates a transaction document in Firestore (transactions collection)
- * using the Google Service Account via Firestore REST API.
+ * Creates a transaction document in Firestore (transactions collection).
+ * Status, timestamps and paymentMethod are set server-side.
  */
 export async function createTransactionDoc(
   projectId: string,
@@ -484,14 +470,16 @@ export async function createTransactionDoc(
   data: CreateTransactionInput
 ): Promise<string> {
   const now = Date.now();
-  const docId = data.id || `tx_${now}_${Math.random().toString(36).slice(2, 9)}`;
+  const docId = `tx_${now}_${crypto.randomUUID().slice(0, 8)}`;
 
   const txData = {
     ...data,
     id: docId,
-    status: data.status || 'pending',
-    createdAt: data.createdAt || now,
-    updatedAt: data.updatedAt || now,
+    paymentMethod: 'web3',
+    status: 'pending' as const,
+    statusMessage: 'Awaiting blockchain confirmation.',
+    createdAt: now,
+    updatedAt: now,
   };
 
   const fields = toFirestoreFields(txData);
@@ -516,25 +504,267 @@ export async function createTransactionDoc(
   return docId;
 }
 
-export interface CreateHistoryInput {
-  id?: string;
-  userId: string;
-  fileName: string;
-  originalDimensions?: { width: number; height: number };
-  originalSize?: number;
-  originalBase64?: string;
-  imageHash?: string;
-  nodeCount?: number;
-  executionTimeMs?: number;
-  parameters?: Record<string, any>;
-  svg: string;
-  svgSize?: number;
-  createdAt?: number;
+/**
+ * Atomically unlocks an image for a user: decrements credits by 1 and sets the unlock entry
+ * in a single Firestore commit with updateTime precondition.
+ * Returns true on success, false on precondition failure or error.
+ */
+export async function atomicUnlockImage(
+  projectId: string,
+  accessToken: string | null,
+  userId: string,
+  imageHash: string,
+  unlockedAt: number,
+  maxAttempts = 3
+): Promise<boolean> {
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:commit`;
+
+  const userDocPath = `projects/${projectId}/databases/(default)/documents/users/${userId}`;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const commitBody = {
+      writes: [
+        {
+          transform: {
+            document: userDocPath,
+            fieldTransforms: [
+              {
+                fieldPath: 'credits',
+                increment: {
+                  integerValue: '-1',
+                },
+              },
+              {
+                fieldPath: 'updatedAt',
+                setToServerValue: 'REQUEST_TIME',
+              },
+            ],
+          },
+        },
+        {
+          update: {
+            document: userDocPath,
+            fields: {
+              [`unlockedImages.${imageHash}`]: {
+                mapValue: {
+                  fields: {
+                    imageHash: { stringValue: imageHash },
+                    generationsUsed: { integerValue: '0' },
+                    maxGenerations: { integerValue: '10' },
+                    unlockedAt: { integerValue: String(unlockedAt) },
+                  },
+                },
+              },
+            },
+          },
+        },
+      ],
+    };
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (accessToken) {
+      headers['Authorization'] = `Bearer ${accessToken}`;
+    }
+
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(commitBody),
+      });
+
+      if (res.ok) {
+        return true;
+      }
+
+      if (res.status === 400) {
+        const errText = await res.text().catch(() => '');
+        if (errText.includes('FAILED_PRECONDITION')) {
+          console.warn(`[atomicUnlockImage] Precondition failed, attempt ${attempt + 1}/${maxAttempts}`);
+          continue;
+        }
+      }
+
+      console.error(`[atomicUnlockImage] Commit failed: ${res.status}`, await res.text().catch(() => ''));
+      return false;
+    } catch (err) {
+      console.error(`[atomicUnlockImage] Error:`, err);
+      return false;
+    }
+  }
+
+  console.error(`[atomicUnlockImage] Failed after ${maxAttempts} attempts`);
+  return false;
 }
 
 /**
- * Creates a history item document in Firestore under users/{userId}/history subcollection
- * using the Google Service Account via Firestore REST API.
+ * Atomically increments generationsUsed for an unlocked image in a single Firestore commit.
+ */
+export async function atomicConsumeGeneration(
+  projectId: string,
+  accessToken: string | null,
+  userId: string,
+  imageHash: string,
+  maxAttempts = 3
+): Promise<boolean> {
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:commit`;
+
+  const userDocPath = `projects/${projectId}/databases/(default)/documents/users/${userId}`;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const commitBody = {
+      writes: [
+        {
+          transform: {
+            document: userDocPath,
+            fieldTransforms: [
+              {
+                fieldPath: `unlockedImages.${imageHash}.generationsUsed`,
+                increment: {
+                  integerValue: '1',
+                },
+              },
+              {
+                fieldPath: 'updatedAt',
+                setToServerValue: 'REQUEST_TIME',
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (accessToken) {
+      headers['Authorization'] = `Bearer ${accessToken}`;
+    }
+
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(commitBody),
+      });
+
+      if (res.ok) {
+        return true;
+      }
+
+      if (res.status === 400) {
+        const errText = await res.text().catch(() => '');
+        if (errText.includes('FAILED_PRECONDITION')) {
+          console.warn(`[atomicConsumeGeneration] Precondition failed, attempt ${attempt + 1}/${maxAttempts}`);
+          continue;
+        }
+      }
+
+      console.error(`[atomicConsumeGeneration] Commit failed: ${res.status}`, await res.text().catch(() => ''));
+      return false;
+    } catch (err) {
+      console.error(`[atomicConsumeGeneration] Error:`, err);
+      return false;
+    }
+  }
+
+  console.error(`[atomicConsumeGeneration] Failed after ${maxAttempts} attempts`);
+  return false;
+}
+
+/**
+ * Atomically confirms a transaction and increments user credits in a single Firestore commit.
+ * Uses currentDocument precondition on the transaction document so concurrent runs can't both win.
+ */
+export async function confirmAndCreditAtomically(
+  projectId: string,
+  accessToken: string | null,
+  transactionId: string,
+  userId: string,
+  creditsToAdd: number,
+  confirmedAt: number,
+  txHash?: string,
+  statusMessage?: string
+): Promise<boolean> {
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:commit`;
+
+  const txDocPath = `projects/${projectId}/databases/(default)/documents/transactions/${transactionId}`;
+  const userDocPath = `projects/${projectId}/databases/(default)/documents/users/${userId}`;
+
+  const txFields: Record<string, any> = {
+    status: { stringValue: 'confirmed' },
+    confirmedAt: { integerValue: String(confirmedAt) },
+    updatedAt: { integerValue: String(confirmedAt) },
+  };
+  if (txHash) {
+    txFields.txHash = { stringValue: txHash };
+  }
+  if (statusMessage) {
+    txFields.statusMessage = { stringValue: statusMessage };
+  }
+
+  const commitBody = {
+    writes: [
+      {
+        update: {
+          document: txDocPath,
+          fields: txFields,
+          currentDocument: {
+            exists: true,
+          },
+        },
+      },
+      {
+        transform: {
+          document: userDocPath,
+          fieldTransforms: [
+            {
+              fieldPath: 'credits',
+              increment: {
+                integerValue: String(creditsToAdd),
+              },
+            },
+            {
+              fieldPath: 'updatedAt',
+              setToServerValue: 'REQUEST_TIME',
+            },
+          ],
+        },
+      },
+    ],
+  };
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(commitBody),
+    });
+
+    if (res.ok) {
+      return true;
+    }
+
+    console.error(`[confirmAndCreditAtomically] Commit failed: ${res.status}`, await res.text().catch(() => ''));
+    return false;
+  } catch (err) {
+    console.error(`[confirmAndCreditAtomically] Error:`, err);
+    return false;
+  }
+}
+
+export interface CreateHistoryInput {
+  userId: string;
+  imageHash: string;
+  svg: string;
+}
+
+/**
+ * Creates a history item in users/{userId}/history subcollection.
+ * Timestamps are set server-side.
  */
 export async function createHistoryDoc(
   projectId: string,
@@ -542,12 +772,12 @@ export async function createHistoryDoc(
   data: CreateHistoryInput
 ): Promise<string> {
   const now = Date.now();
-  const docId = data.id || `hist_${now}_${Math.random().toString(36).slice(2, 9)}`;
+  const docId = `hist_${now}_${crypto.randomUUID().slice(0, 8)}`;
 
   const historyData = {
     ...data,
     id: docId,
-    createdAt: data.createdAt || now,
+    createdAt: now,
   };
 
   const fields = toFirestoreFields(historyData);

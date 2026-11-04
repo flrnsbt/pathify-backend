@@ -79,11 +79,6 @@ npm run dev
 ```
 The worker will listen on `http://localhost:8787`.
 
-Test health endpoint:
-```bash
-curl http://localhost:8787/health
-```
-
 ---
 
 ## 🚢 Production Deployment
