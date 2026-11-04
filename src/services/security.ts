@@ -4,18 +4,6 @@ import { verifyFirebaseToken } from './auth';
 
 export interface SecurityCheckOptions {
   /**
-   * Whether to require a valid API secret (checked against env.API_SECRET).
-   * Defaults to true if env.API_SECRET is defined.
-   */
-  requireApiSecret?: boolean;
-
-  /**
-   * Whether App Check token is strictly required.
-   * Defaults to true when env.ENVIRONMENT is 'production'.
-   */
-  requireAppCheck?: boolean;
-
-  /**
    * Whether a valid Firebase ID Token (Bearer) is required.
    * If true, returns 401 if missing or invalid.
    * If false, extracts and verifies user if provided, but does not block guests.
@@ -63,13 +51,8 @@ export async function verifyWorkerSecurity(
     };
   }
 
-  // 2. API Secret Verification (server-to-server protection)
-  const shouldCheckSecret =
-    options.requireApiSecret !== undefined
-      ? options.requireApiSecret
-      : Boolean(env.API_SECRET);
-
-  if (shouldCheckSecret && env.API_SECRET) {
+  // 2. API Secret Verification (server-to-server protection, always required)
+  if (env.API_SECRET) {
     const apiSecret = request.headers.get('x-api-secret');
     if (!apiSecret || apiSecret !== env.API_SECRET) {
       return {
@@ -89,36 +72,11 @@ export async function verifyWorkerSecurity(
     }
   }
 
-  // 3. Firebase App Check Verification (anti-bot / app attestation)
-  const isProd = env.ENVIRONMENT === 'production';
-  const shouldRequireAppCheck =
-    options.requireAppCheck !== undefined ? options.requireAppCheck : isProd;
-
+  // 3. Firebase App Check Verification (anti-bot / app attestation, always required)
   const appCheckToken = request.headers.get('X-Firebase-AppCheck');
   let validatedAppId: string | undefined;
 
-  if (appCheckToken) {
-    const appCheckResult = await verifyAppCheckToken(appCheckToken);
-    if (!appCheckResult && isProd) {
-      return {
-        isValid: false,
-        errorResponse: new Response(
-          JSON.stringify({
-            success: false,
-            error: 'Unauthorized: Invalid App Check token.',
-          }),
-          {
-            status: 401,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          }
-        ),
-        corsHeaders,
-      };
-    }
-    if (appCheckResult) {
-      validatedAppId = appCheckResult.appId;
-    }
-  } else if (shouldRequireAppCheck) {
+  if (!appCheckToken) {
     return {
       isValid: false,
       errorResponse: new Response(
@@ -134,6 +92,25 @@ export async function verifyWorkerSecurity(
       corsHeaders,
     };
   }
+
+  const appCheckResult = await verifyAppCheckToken(appCheckToken);
+  if (!appCheckResult) {
+    return {
+      isValid: false,
+      errorResponse: new Response(
+        JSON.stringify({
+          success: false,
+          error: 'Unauthorized: Invalid App Check token.',
+        }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      ),
+      corsHeaders,
+    };
+  }
+  validatedAppId = appCheckResult.appId;
 
   // 4. Firebase Auth Token Verification (user identity for Firestore safety)
   const authHeader = request.headers.get('Authorization') || '';

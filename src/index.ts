@@ -19,12 +19,12 @@ import { CREDIT_PACKS, findPackById, getTokenPriceUsd, calculateCryptoAmount } f
 export { TransactionScheduler } from "./services/scheduler";
 
 export interface Env {
-  ENVIRONMENT?: string;
   FIREBASE_PROJECT_ID?: string;
   FIREBASE_CLIENT_EMAIL?: string;
   FIREBASE_PRIVATE_KEY?: string;
   HANDSHAKE_SECRET?: string;
   API_SECRET?: string;
+  TESTNET_SECRET?: string;
   SUPPORT_EMAIL?: string;
   TRANSACTION_SCHEDULER?: DurableObjectNamespace<TransactionScheduler>;
 }
@@ -58,7 +58,7 @@ export function getCorsHeaders(request: Request): Record<string, string> {
     ...(isAllowed ? { "Access-Control-Allow-Origin": origin } : {}),
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers":
-      "Content-Type, Authorization, x-api-secret, X-Firebase-AppCheck",
+      "Content-Type, Authorization, x-api-secret, X-Firebase-AppCheck, x-testnet-secret",
     Vary: "Origin",
   };
 }
@@ -227,11 +227,14 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    const isTestnet = env.ENVIRONMENT !== "production";
+    const isTestnet : boolean = !!env.TESTNET_SECRET && ((request.headers.get("x-testnet-secret") || "") === env.TESTNET_SECRET);
 
     // Config endpoint: returns packs, live prices, chains, and wallets
     if (url.pathname === "/api/config") {
-      const chainsConfig = getChainsConfig(false);
+      const security = await verifyWorkerSecurity(request, env);
+      if (!security.isValid) return security.errorResponse!;
+
+      const chainsConfig = getChainsConfig(isTestnet);
       const wallets = getWalletAddresses();
 
       // Build price map for all tokens across all chains
@@ -253,7 +256,7 @@ export default {
 
       return new Response(
         JSON.stringify({ packs, prices, chains: chainsConfig, wallets, isTestnet }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        { status: 200, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
@@ -328,7 +331,7 @@ export default {
         });
       }
 
-      const chainConfig = getChainsConfig(false)[body.chainKey];
+      const chainConfig = getChainsConfig(isTestnet)[body.chainKey];
       if (!chainConfig) {
         return new Response(JSON.stringify({ error: "Invalid chainKey" }), {
           status: 400, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
@@ -434,7 +437,7 @@ export default {
         });
       }
 
-      const security = await verifyWorkerSecurity(request, env, { requireApiSecret: false });
+      const security = await verifyWorkerSecurity(request, env);
       if (!security.isValid) return security.errorResponse!;
 
       let body: { email?: string; message?: string; category?: string; subject?: string; name?: string; txHash?: string } = {} as any;
