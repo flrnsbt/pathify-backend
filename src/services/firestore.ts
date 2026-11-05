@@ -40,43 +40,57 @@ function base64UrlEncode(data: Uint8Array | string): string {
  * Converts a PEM formatted private key to a WebCrypto CryptoKey
  */
 async function importPrivateKey(pem: string): Promise<CryptoKey> {
-  // Detect key type from PEM header before stripping it
-  // Google service account keys are typically PKCS#1 ("BEGIN RSA PRIVATE KEY")
-  // PKCS#8 uses "BEGIN PRIVATE KEY"
+  // Check if it's PKCS#1 or PKCS#8
   const hasRsaHeader = pem.includes('BEGIN RSA PRIVATE KEY');
   const importFormat: 'pkcs8' | 'rsa-pkcs1' = hasRsaHeader ? 'rsa-pkcs1' : 'pkcs8';
 
-  // Clean up PEM wrapper and whitespace
-  // Handle both literal \n strings (from Cloudflare secrets) and actual newlines
+  // Clean up PEM wrapper, literal escaped newlines (\n), and actual whitespace
   let cleanPem = pem
     .replace(/-----BEGIN[A-Z0-9_-]+PRIVATE KEY-----/g, '')
-    .replace(/-----END[A-Z0-9_-]+PRIVATE KEY-----/g, '');
+    .replace(/-----END[A-Z0-9_-]+PRIVATE KEY-----/g, '')
+    .replace(/\\n/g, '\n')
+    .replace(/[\r\n\s]/g, '');
 
-  // Replace literal \n strings (escaped backslash-n from JSON/secret storage)
-  cleanPem = cleanPem.replace(/\\n/g, '\n');
-  // Now remove all actual newlines and whitespace
-  cleanPem = cleanPem.replace(/[\r\n\s]/g, '');
+  try {
+    const binaryDerString = atob(cleanPem);
+    const binaryDer = new Uint8Array(binaryDerString.length);
+    for (let i = 0; i < binaryDerString.length; i++) {
+      binaryDer[i] = binaryDerString.charCodeAt(i);
+    }
 
-  // Strip any remaining non-base64 characters that atob() would reject
-  // Valid base64: A-Z, a-z, 0-9, +, /, =
-  cleanPem = cleanPem.replace(/[^A-Za-z0-9+\/=]/g, '');
+    return await crypto.subtle.importKey(
+      importFormat,
+      binaryDer.buffer,
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        hash: 'SHA-256',
+      },
+      false,
+      ['sign']
+    );
+  } catch (err) {
+    // Fallback attempt: if parsing failed with one format, try the alternative
+    // in case the header detection misidentified a converted key format.
+    const fallbackFormat = importFormat === 'pkcs8' ? 'rsa-pkcs1' : 'pkcs8';
+    
+    // Re-decode binaryDer from cleanPem
+    const binaryDerString = atob(cleanPem);
+    const binaryDer = new Uint8Array(binaryDerString.length);
+    for (let i = 0; i < binaryDerString.length; i++) {
+      binaryDer[i] = binaryDerString.charCodeAt(i);
+    }
 
-  const binaryDerString = atob(cleanPem);
-  const binaryDer = new Uint8Array(binaryDerString.length);
-  for (let i = 0; i < binaryDerString.length; i++) {
-    binaryDer[i] = binaryDerString.charCodeAt(i);
+    return await crypto.subtle.importKey(
+      fallbackFormat,
+      binaryDer.buffer,
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        hash: 'SHA-256',
+      },
+      false,
+      ['sign']
+    );
   }
-
-  return await crypto.subtle.importKey(
-    importFormat,
-    binaryDer.buffer,
-    {
-      name: 'RSASSA-PKCS1-v1_5',
-      hash: 'SHA-256',
-    },
-    false,
-    ['sign']
-  );
 }
 
 /**
