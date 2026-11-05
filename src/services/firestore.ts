@@ -701,15 +701,22 @@ export async function confirmAndCreditAtomically(
     txFields.statusMessage = { stringValue: statusMessage };
   }
 
+  const txUpdateMask = ['status', 'confirmedAt', 'updatedAt'];
+  if (txHash) txUpdateMask.push('txHash');
+  if (statusMessage) txUpdateMask.push('statusMessage');
+
   const commitBody = {
     writes: [
       {
         update: {
-          document: txDocPath,
+          name: txDocPath,
           fields: txFields,
-          currentDocument: {
-            exists: true,
-          },
+        },
+        updateMask: {
+          fieldPaths: txUpdateMask,
+        },
+        currentDocument: {
+          exists: true,
         },
       },
       {
