@@ -16,6 +16,7 @@ import { getChainsConfig, getERC20ContractsForChains, SupportedChainKey, Support
 import { getWalletAddresses, findWalletAddress } from "./config/wallets";
 import { CREDIT_PACKS, findPackById, getTokenPriceUsd, calculateCryptoAmount } from "./config/packs";
 import { GENERATIONS_PER_UNLOCK } from "./config/limits";
+import { getOrCreateUserEvmAddress, getUserEvmAddress } from "./services/user-wallet";
 
 export { TransactionScheduler } from "./services/scheduler";
 
@@ -26,6 +27,7 @@ export interface Env {
   HANDSHAKE_SECRET?: string;
   API_SECRET?: string;
   TESTNET_SECRET?: string;
+  WALLET_ENCRYPTION_SECRET?: string;
   SUPPORT_EMAIL?: string;
   TRANSACTION_SCHEDULER?: DurableObjectNamespace<TransactionScheduler>;
 }
@@ -279,6 +281,40 @@ export default {
       );
     }
 
+    // User wallet endpoint: returns (or creates on first use) the user's EVM deposit address.
+    // Only the public address is ever returned; the private key stays server-side.
+    if (url.pathname === "/api/user-wallet") {
+      if (request.method !== "GET") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const security = await verifyWorkerSecurity(request, env, { requireAuth: true });
+      if (!security.isValid) return security.errorResponse!;
+
+      const projectId = env.FIREBASE_PROJECT_ID as string;
+      const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
+
+      try {
+        const address = await getOrCreateUserEvmAddress(
+          projectId,
+          accessToken,
+          security.user!.uid,
+          env,
+        );
+        return new Response(
+          JSON.stringify({ success: true, address }),
+          { status: 200, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
+        );
+      } catch (err) {
+        console.error("[user-wallet] Failed to resolve user wallet:", err);
+        return new Response(JSON.stringify({ error: "Failed to resolve user wallet" }), {
+          status: 500, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     // Cryptographic Server Handshake
     if (url.pathname === "/api/handshake") {
       return await handleCryptographicHandshake(request, env);
@@ -395,8 +431,12 @@ export default {
         });
       }
 
-      const toAddress = findWalletAddress(body.chainKey, cryptoToken, chainConfig.chainId, isTestnet) || "";
-      if (!toAddress) {
+      // wallets.*.json still defines which chain/token combos are enabled;
+      // its address is the fallback. For EVM chains we prefer the user's own
+      // generated wallet address (same address on every EVM chain).
+      const fallbackToAddress =
+        findWalletAddress(body.chainKey, cryptoToken, chainConfig.chainId, isTestnet) || "";
+      if (!fallbackToAddress) {
         return new Response(JSON.stringify({ error: "No wallet configured for this chain/token" }), {
           status: 503, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
         });
@@ -404,6 +444,11 @@ export default {
 
       const projectId = env.FIREBASE_PROJECT_ID as string;
       const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
+
+      const userAddress = chainConfig.isEvm
+        ? await getUserEvmAddress(projectId, accessToken, security.user!.uid)
+        : null;
+      const toAddress = userAddress || fallbackToAddress;
 
       const txId = await createTransactionDoc(projectId, accessToken, {
         userId: security.user!.uid,
