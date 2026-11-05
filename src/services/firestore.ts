@@ -41,11 +41,19 @@ function base64UrlEncode(data: Uint8Array | string): string {
  */
 async function importPrivateKey(pem: string): Promise<CryptoKey> {
   // Clean up PEM wrapper and whitespace
-  const cleanPem = pem
+  // Handle both literal \n strings (from Cloudflare secrets) and actual newlines
+  let cleanPem = pem
     .replace(/-----BEGIN[A-Z0-9_-]+PRIVATE KEY-----/g, '')
-    .replace(/-----END[A-Z0-9_-]+PRIVATE KEY-----/g, '')
-    .replace(/\\n/g, '')
-    .replace(/\s+/g, '');
+    .replace(/-----END[A-Z0-9_-]+PRIVATE KEY-----/g, '');
+
+  // Replace literal \n strings (escaped backslash-n from JSON/secret storage)
+  cleanPem = cleanPem.replace(/\\n/g, '\n');
+  // Now remove all actual newlines and whitespace
+  cleanPem = cleanPem.replace(/[\r\n\s]/g, '');
+
+  // Strip any remaining non-base64 characters that atob() would reject
+  // Valid base64: A-Z, a-z, 0-9, +, /, =
+  cleanPem = cleanPem.replace(/[^A-Za-z0-9+\/=]/g, '');
 
   const binaryDerString = atob(cleanPem);
   const binaryDer = new Uint8Array(binaryDerString.length);
