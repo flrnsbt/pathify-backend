@@ -155,7 +155,6 @@ export async function handleCryptographicHandshake(
     const fields = userData?.fields || {};
 
     const credits = fields.credits?.integerValue ? Number(fields.credits.integerValue) : 0;
-    const isAdmin = Boolean(fields.isAdmin?.booleanValue);
     const isSubscribed = fields.subscription?.mapValue?.fields?.status?.stringValue === 'active';
     const unlockedImages = fields.unlockedImages?.mapValue?.fields || {};
 
@@ -163,9 +162,12 @@ export async function handleCryptographicHandshake(
     const generationsUsed = existingUnlock?.generationsUsed?.integerValue
       ? Number(existingUnlock.generationsUsed.integerValue)
       : 0;
-    const maxGenerations = existingUnlock?.maxGenerations?.integerValue
+    // Clamp to the current product limit — legacy unlocks may carry a higher
+    // stored maxGenerations (e.g. 10) but the effective quota is capped.
+    const storedMax = existingUnlock?.maxGenerations?.integerValue
       ? Number(existingUnlock.maxGenerations.integerValue)
       : GENERATIONS_PER_UNLOCK;
+    const maxGenerations = Math.min(storedMax, GENERATIONS_PER_UNLOCK);
     const remainingGens = Math.max(0, maxGenerations - generationsUsed);
 
     const now = Date.now();
@@ -173,8 +175,8 @@ export async function handleCryptographicHandshake(
     const expiresAt = now + 3600000;
 
     if (action === 'unlock_image') {
-      if (isAdmin || isSubscribed || (existingUnlock && remainingGens > 0)) {
-        const quota = isAdmin || isSubscribed ? 9999 : remainingGens;
+      if (isSubscribed || (existingUnlock && remainingGens > 0)) {
+        const quota = isSubscribed ? 9999 : remainingGens;
         const { ticketId, nonce, signature } = await generateTicket(
           secret, userId, imageHash, quota, generationsUsed, quota, expiresAt, now
         );
@@ -248,7 +250,7 @@ export async function handleCryptographicHandshake(
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     } else if (action === 'consume_generation') {
-      if (isAdmin || isSubscribed) {
+      if (isSubscribed) {
         const { ticketId, nonce, signature } = await generateTicket(
           secret, userId, imageHash, 9999, 0, 9999, expiresAt, now
         );
@@ -274,29 +276,76 @@ export async function handleCryptographicHandshake(
         );
       }
 
-      if (!existingUnlock || remainingGens <= 0) {
-        return new Response(
-          JSON.stringify({ success: false, error: 'Quota exceeded for this image.', generationsRemaining: 0 }),
-          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      // Atomic consume with retry: re-read the user doc on each attempt so a
+      // concurrent consume that claimed the same slot forces a fresh quota check.
+      const userDocUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}`;
+      let consumed = false;
+      let newGenerationsUsed = generationsUsed;
+      let updatedRemaining = remainingGens;
+      let finalMaxGenerations = maxGenerations;
+
+      for (let attempt = 0; attempt < 3 && !consumed; attempt++) {
+        // Refresh state — the initial read may be stale after a conflicting commit.
+        // Attempt 0 reuses the already-parsed user doc (its body was consumed above).
+        let freshFields: any = fields;
+        if (attempt > 0) {
+          const freshRes = await fetch(userDocUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
+          if (!freshRes.ok) {
+            console.error(`[Handshake] Failed to re-fetch user doc: ${freshRes.status}`);
+            return new Response(
+              JSON.stringify({ success: false, error: 'Failed to load user data.' }),
+              { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+          }
+          freshFields = ((await freshRes.json()) as any)?.fields || {};
+        }
+
+        const freshUnlock = freshFields.unlockedImages?.mapValue?.fields?.[imageHash]?.mapValue?.fields;
+        const freshUsed = freshUnlock?.generationsUsed?.integerValue
+          ? Number(freshUnlock.generationsUsed.integerValue)
+          : 0;
+        const freshStoredMax = freshUnlock?.maxGenerations?.integerValue
+          ? Number(freshUnlock.maxGenerations.integerValue)
+          : GENERATIONS_PER_UNLOCK;
+        const freshMax = Math.min(freshStoredMax, GENERATIONS_PER_UNLOCK);
+        const freshRemaining = Math.max(0, freshMax - freshUsed);
+
+        if (!freshUnlock || freshRemaining <= 0) {
+          return new Response(
+            JSON.stringify({ success: false, error: 'Quota exceeded for this image.', generationsRemaining: 0 }),
+            { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const result = await atomicConsumeGeneration(
+          projectId, accessToken, userId, imageHash, freshUsed
         );
+        if (result === 'ok') {
+          consumed = true;
+          newGenerationsUsed = freshUsed + 1;
+          finalMaxGenerations = freshMax;
+          updatedRemaining = Math.max(0, freshMax - newGenerationsUsed);
+        } else if (result === 'conflict') {
+          continue; // slot taken concurrently — loop re-reads and re-checks
+        } else {
+          console.error('[Handshake] Atomic consume generation commit failed');
+          return new Response(
+            JSON.stringify({ success: false, error: 'Failed to save generation data.' }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
       }
 
-      // Atomic commit: increment generationsUsed in one transaction
-      const writeSuccess = await atomicConsumeGeneration(projectId, accessToken, userId, imageHash);
-      if (!writeSuccess) {
-        console.error('[Handshake] Atomic consume generation commit failed');
+      if (!consumed) {
         return new Response(
-          JSON.stringify({ success: false, error: 'Failed to save generation data.' }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          JSON.stringify({ success: false, error: 'Quota check contention, please retry.' }),
+          { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
-
-      const newGenerationsUsed = generationsUsed + 1;
-      const updatedRemaining = Math.max(0, maxGenerations - newGenerationsUsed);
 
       // Only issue ticket after successful write
       const { ticketId, nonce, signature } = await generateTicket(
-        secret, userId, imageHash, updatedRemaining, newGenerationsUsed, maxGenerations, expiresAt, now
+        secret, userId, imageHash, updatedRemaining, newGenerationsUsed, finalMaxGenerations, expiresAt, now
       );
 
       return new Response(
@@ -308,7 +357,7 @@ export async function handleCryptographicHandshake(
             imageHash,
             generationsRemaining: updatedRemaining,
             generationsUsed: newGenerationsUsed,
-            maxGenerations,
+            maxGenerations: finalMaxGenerations,
             expiresAt,
             issuedAt: now,
             nonce,

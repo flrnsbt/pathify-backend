@@ -601,23 +601,44 @@ export async function atomicUnlockImage(
   return false;
 }
 
+export type ConsumeGenerationResult = 'ok' | 'conflict' | 'error';
+
 /**
- * Atomically increments generationsUsed for an unlocked image in a single Firestore commit.
+ * Atomically consumes one generation for an unlocked image.
+ *
+ * Uses a slot-claim pattern: the commit creates
+ * `users/{uid}/image_quota/{imageHash}_{slotIndex}` with an
+ * exists=false precondition AND increments generationsUsed — all in one
+ * atomic commit. Two concurrent consumers claiming the same slot index
+ * cannot both succeed; the loser gets 'conflict' and must re-read state.
  */
 export async function atomicConsumeGeneration(
   projectId: string,
   accessToken: string | null,
   userId: string,
   imageHash: string,
+  slotIndex: number,
   maxAttempts = 3
-): Promise<boolean> {
+): Promise<ConsumeGenerationResult> {
   const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:commit`;
 
   const userDocPath = `projects/${projectId}/databases/(default)/documents/users/${userId}`;
+  const slotDocPath = `projects/${projectId}/databases/(default)/documents/users/${userId}/image_quota/${imageHash}_${slotIndex}`;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const commitBody = {
       writes: [
+        {
+          // Slot claim: fails with FAILED_PRECONDITION if already consumed
+          update: {
+            name: slotDocPath,
+            fields: {
+              imageHash: { stringValue: imageHash },
+              slotIndex: { integerValue: String(slotIndex) },
+            },
+          },
+          currentDocument: { exists: false },
+        },
         {
           transform: {
             document: userDocPath,
@@ -651,27 +672,30 @@ export async function atomicConsumeGeneration(
       });
 
       if (res.ok) {
-        return true;
+        return 'ok';
       }
 
       const errText = await res.text().catch(() => '');
-      if (res.status === 400 && errText.includes('FAILED_PRECONDITION')) {
-        console.warn(`[atomicConsumeGeneration] Precondition failed, attempt ${attempt + 1}/${maxAttempts}`);
-        continue;
+      if (
+        (res.status === 400 || res.status === 409) &&
+        (errText.includes('FAILED_PRECONDITION') || errText.includes('ALREADY_EXISTS'))
+      ) {
+        // Slot already claimed by a concurrent consume — caller must re-read and retry
+        return 'conflict';
       }
 
       console.error(
         `[atomicConsumeGeneration] Commit failed: ${res.status} body=${errText} request=${JSON.stringify(commitBody)}`
       );
-      return false;
+      return 'error';
     } catch (err) {
       console.error(`[atomicConsumeGeneration] Error:`, err);
-      return false;
+      return 'error';
     }
   }
 
   console.error(`[atomicConsumeGeneration] Failed after ${maxAttempts} attempts`);
-  return false;
+  return 'error';
 }
 
 /**
