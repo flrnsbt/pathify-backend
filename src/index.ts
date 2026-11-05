@@ -15,6 +15,7 @@ import type { TransactionScheduler } from "./services/scheduler";
 import { getChainsConfig, getERC20ContractsForChains, SupportedChainKey, SupportedToken, DEFAULT_TESTNET_CHAIN_IDS } from "./config/chains";
 import { getWalletAddresses, findWalletAddress } from "./config/wallets";
 import { CREDIT_PACKS, findPackById, getTokenPriceUsd, calculateCryptoAmount } from "./config/packs";
+import { GENERATIONS_PER_UNLOCK } from "./config/limits";
 
 export { TransactionScheduler } from "./services/scheduler";
 
@@ -235,8 +236,19 @@ export default {
 
     const isTestnet : boolean = !!env.TESTNET_SECRET && ((request.headers.get("X-Testnet-Secret") || "") === env.TESTNET_SECRET);
 
-    // Config endpoint: returns packs, live prices, chains, and wallets
-    if (url.pathname === "/api/config") {
+    // App-wide config endpoint: non-crypto parameters (generation limits, etc.)
+    if (url.pathname === "/api/app-config") {
+      const security = await verifyWorkerSecurity(request, env);
+      if (!security.isValid) return security.errorResponse!;
+
+      return new Response(
+        JSON.stringify({ limits: { generationsPerUnlock: GENERATIONS_PER_UNLOCK } }),
+        { status: 200, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    // Crypto config endpoint: returns packs, live prices, chains, and wallets
+    if (url.pathname === "/api/crypto-config") {
       const security = await verifyWorkerSecurity(request, env);
       if (!security.isValid) return security.errorResponse!;
 
@@ -457,8 +469,10 @@ export default {
 
       const { userId: _ignored, createdAt: _ignoredCreatedAt, ...rest } = body;
       const historyId = await createHistoryDoc(projectId, accessToken, {
-        userId: security.user!.uid,
+        imageHash: body.imageHash,
+        svg: body.svg,
         ...rest,
+        userId: security.user!.uid,
       });
 
       return new Response(

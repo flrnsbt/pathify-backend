@@ -1,6 +1,7 @@
 import { Env } from '../index';
 import { verifyWorkerSecurity } from './security';
 import { getGoogleAccessToken, atomicUnlockImage, atomicConsumeGeneration } from './firestore';
+import { GENERATIONS_PER_UNLOCK } from '../config/limits';
 
 /**
  * Computes an HMAC-SHA256 signature using Web Crypto API
@@ -164,7 +165,7 @@ export async function handleCryptographicHandshake(
       : 0;
     const maxGenerations = existingUnlock?.maxGenerations?.integerValue
       ? Number(existingUnlock.maxGenerations.integerValue)
-      : 10;
+      : GENERATIONS_PER_UNLOCK;
     const remainingGens = Math.max(0, maxGenerations - generationsUsed);
 
     const now = Date.now();
@@ -223,7 +224,7 @@ export async function handleCryptographicHandshake(
 
       // Only issue ticket after successful write
       const { ticketId, nonce, signature } = await generateTicket(
-        secret, userId, imageHash, 10, 0, 10, expiresAt, now
+        secret, userId, imageHash, GENERATIONS_PER_UNLOCK, 0, GENERATIONS_PER_UNLOCK, expiresAt, now
       );
 
       return new Response(
@@ -233,15 +234,15 @@ export async function handleCryptographicHandshake(
             ticketId,
             userId,
             imageHash,
-            generationsRemaining: 10,
+            generationsRemaining: GENERATIONS_PER_UNLOCK,
             generationsUsed: 0,
-            maxGenerations: 10,
+            maxGenerations: GENERATIONS_PER_UNLOCK,
             expiresAt,
             issuedAt: now,
             nonce,
             signature,
           },
-          generationsRemaining: 10,
+          generationsRemaining: GENERATIONS_PER_UNLOCK,
           creditsRemaining: credits - 1,
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

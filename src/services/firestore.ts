@@ -1,4 +1,5 @@
 import { SupportedChainKey, SupportedToken } from '../config/chains';
+import { GENERATIONS_PER_UNLOCK } from '../config/limits';
 
 export interface CryptoTransactionDoc {
   id: string;
@@ -550,7 +551,7 @@ export async function atomicUnlockImage(
                   fields: {
                     imageHash: { stringValue: imageHash },
                     generationsUsed: { integerValue: '0' },
-                    maxGenerations: { integerValue: '10' },
+                    maxGenerations: { integerValue: String(GENERATIONS_PER_UNLOCK) },
                     unlockedAt: { integerValue: String(unlockedAt) },
                   },
                 },
