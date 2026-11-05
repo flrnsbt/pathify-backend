@@ -369,6 +369,7 @@ export default {
         chainId: chainConfig.chainId,
         toAddress,
         txHash: body.txHash,
+        isTestnet,
       });
 
       activateTransactionTracking();

@@ -428,13 +428,15 @@ async function verifyBtcTransaction(
 export async function verifyCryptoTransaction(
   tx: CryptoTransactionDoc,
 ): Promise<VerificationResult> {
+  const isTestnet = tx.isTestnet ?? false;
+
   if (tx.chainKey === "btc") {
     return await verifyBtcTransaction(
       tx.txHash,
       tx.toAddress,
       tx.cryptoAmount,
       tx.createdAt,
-      false,
+      isTestnet,
     );
   }
 
@@ -447,7 +449,7 @@ export async function verifyCryptoTransaction(
   }
 
   return await verifyEvmTransaction(
-    false,
+    isTestnet,
     tx.chainKey,
     tx.txHash,
     tx.toAddress,

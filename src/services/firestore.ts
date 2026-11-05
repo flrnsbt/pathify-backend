@@ -18,6 +18,7 @@ export interface CryptoTransactionDoc {
   createdAt: number;
   updatedAt: number;
   confirmedAt?: number;
+  isTestnet?: boolean;
 }
 
 let cachedAccessToken: string | null = null;
@@ -458,6 +459,7 @@ export interface CreateTransactionInput {
   chainId?: number;
   toAddress: string;
   txHash: string;
+  isTestnet?: boolean;
 }
 
 /**
