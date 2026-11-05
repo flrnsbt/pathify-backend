@@ -6,7 +6,9 @@ import {
   SupportedToken,
 } from "../config/chains";
 import { isValidWalletAddress } from "../config/wallets";
-import { CryptoTransactionDoc } from "./firestore";
+import { CryptoTransactionDoc, getGoogleAccessToken } from "./firestore";
+import { getUserEvmAddress } from "./user-wallet";
+import type { Env } from "../index";
 
 export interface VerificationResult {
   isConfirmed: boolean;
@@ -126,6 +128,7 @@ async function verifyEvmTransaction(
   token: SupportedToken,
   chainId?: number,
   txId?: string,
+  userAddress?: string | null,
 ): Promise<VerificationResult> {
   try {
     vlog(txId, "evm.verify.start", {
@@ -137,8 +140,12 @@ async function verifyEvmTransaction(
       expectedAmount,
     });
 
-    // SECURITY: Validate that recipient is a configured wallet address
-    if (!isValidWalletAddress(expectedRecipient)) {
+    // SECURITY: recipient must be a configured payment wallet OR the tx owner's
+    // own generated EVM address (per-user deposit wallets).
+    const isUserAddress =
+      userAddress != null &&
+      expectedRecipient.toLowerCase() === userAddress.toLowerCase();
+    if (!isValidWalletAddress(expectedRecipient) && !isUserAddress) {
       vlog(txId, "evm.verify.fail", { reason: "recipient-not-configured", expectedRecipient });
       return {
         isConfirmed: false,
@@ -530,6 +537,7 @@ async function verifyBtcTransaction(
  */
 export async function verifyCryptoTransaction(
   tx: CryptoTransactionDoc,
+  env?: Env,
 ): Promise<VerificationResult> {
   vlog(tx.id, "tx.verify.dispatch", {
     chainKey: tx.chainKey,
@@ -560,6 +568,24 @@ export async function verifyCryptoTransaction(
     };
   }
 
+  // Resolve the tx owner's EVM address so transfers to per-user wallets verify
+  let userAddress: string | null = null;
+  if (env?.FIREBASE_PROJECT_ID && tx.userId) {
+    try {
+      const accessToken = await getGoogleAccessToken(
+        env.FIREBASE_CLIENT_EMAIL,
+        env.FIREBASE_PRIVATE_KEY,
+      );
+      userAddress = await getUserEvmAddress(
+        env.FIREBASE_PROJECT_ID,
+        accessToken,
+        tx.userId,
+      );
+    } catch (err) {
+      vlog(tx.id, "evm.verify.user-address-error", { error: String(err) });
+    }
+  }
+
   const result = await verifyEvmTransaction(
     tx.chainKey,
     tx.txHash,
@@ -568,6 +594,7 @@ export async function verifyCryptoTransaction(
     tx.cryptoToken,
     tx.chainId,
     tx.id,
+    userAddress,
   );
   vlog(tx.id, "tx.verify.result", {
     isConfirmed: result.isConfirmed,

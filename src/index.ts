@@ -99,7 +99,7 @@ export async function processPendingTransactions(
   for (const tx of pending) {
     try {
       console.log(`[PROCESSING] Tx ${tx.id} for user ${tx.userId} on chain ${tx.chainKey} (${tx.cryptoToken})`);
-      const verification = await verifyCryptoTransaction(tx);
+      const verification = await verifyCryptoTransaction(tx, env);
       console.log(
         `[VERIFY-RESULT] Tx ${tx.id} chainKey=${tx.chainKey} chainId=${tx.chainId} ` +
         `confirmed=${verification.isConfirmed} failed=${verification.isFailed} ` +
@@ -512,7 +512,14 @@ export default {
       const projectId = env.FIREBASE_PROJECT_ID as string;
       const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
 
-      const { userId: _ignored, createdAt: _ignoredCreatedAt, ...rest } = body;
+      // Strip server-controlled and deprecated fields: userId/createdAt are set
+      // server-side; originalBase64 (raw source image) is no longer stored.
+      const {
+        userId: _ignored,
+        createdAt: _ignoredCreatedAt,
+        originalBase64: _ignoredImage,
+        ...rest
+      } = body;
       const historyId = await createHistoryDoc(projectId, accessToken, {
         imageHash: body.imageHash,
         svg: body.svg,
