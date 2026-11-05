@@ -46,27 +46,15 @@ async function importPrivateKey(base64Pem: string): Promise<CryptoKey> {
 
   const sanitizedBase64 = base64Pem.trim().replace(/^["']|["']$/g, '');
 
-  // 1. Decode the Base64 string stored in Cloudflare secrets back to the PEM string
-  const pem = atob(sanitizedBase64);
 
-  // 2. Detect key type from PEM header
-  const hasRsaHeader = pem.includes('BEGIN RSA PRIVATE KEY');
-  const importFormat: 'pkcs8' | 'rsa-pkcs1' = hasRsaHeader ? 'rsa-pkcs1' : 'pkcs8';
-
-  // 3. Strip headers, footers, and all whitespace/newlines from the decoded PEM
-  const cleanPem = pem
-    .replace(/-----BEGIN[A-Z0-9_-]+PRIVATE KEY-----/g, '')
-    .replace(/-----END[A-Z0-9_-]+PRIVATE KEY-----/g, '')
-    .replace(/[\r\n\s]/g, '');
-
-  const binaryDerString = atob(cleanPem);
+  const binaryDerString = atob(sanitizedBase64);
   const binaryDer = new Uint8Array(binaryDerString.length);
   for (let i = 0; i < binaryDerString.length; i++) {
     binaryDer[i] = binaryDerString.charCodeAt(i);
   }
 
   return await crypto.subtle.importKey(
-    importFormat,
+    'pkcs8',
     binaryDer.buffer,
     {
       name: 'RSASSA-PKCS1-v1_5',
