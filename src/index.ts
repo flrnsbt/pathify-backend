@@ -58,7 +58,7 @@ export function getCorsHeaders(request: Request): Record<string, string> {
     ...(isAllowed ? { "Access-Control-Allow-Origin": origin } : {}),
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers":
-      "Content-Type, Authorization, x-api-secret, X-Firebase-AppCheck, x-testnet-secret",
+      "Content-Type, Authorization, x-api-secret, X-Firebase-AppCheck, X-Testnet-Secret",
     Vary: "Origin",
   };
 }
@@ -227,7 +227,7 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    const isTestnet : boolean = !!env.TESTNET_SECRET && ((request.headers.get("x-testnet-secret") || "") === env.TESTNET_SECRET);
+    const isTestnet : boolean = !!env.TESTNET_SECRET && ((request.headers.get("X-Testnet-Secret") || "") === env.TESTNET_SECRET);
 
     // Config endpoint: returns packs, live prices, chains, and wallets
     if (url.pathname === "/api/config") {
