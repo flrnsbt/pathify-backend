@@ -44,8 +44,10 @@ async function importPrivateKey(base64Pem: string): Promise<CryptoKey> {
     throw new Error('Invalid private key: input is empty or not a string.');
   }
 
+  const sanitizedBase64 = base64Pem.trim().replace(/^["']|["']$/g, '');
+
   // 1. Decode the Base64 string stored in Cloudflare secrets back to the PEM string
-  const pem = atob(base64Pem.trim());
+  const pem = atob(sanitizedBase64);
 
   // 2. Detect key type from PEM header
   const hasRsaHeader = pem.includes('BEGIN RSA PRIVATE KEY');
