@@ -6,17 +6,20 @@ export interface EmailMeta {
   userAgent?: string;
 }
 
+export interface EmailEnv {
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string;
+}
+
 /**
- * Sends a support notification email to the configured SUPPORT_EMAIL.
- * Employs multiple edge-safe delivery channels:
- * 1. Cloudflare Workers MailChannels API (zero credentials required)
- * 2. Optional Resend API (if RESEND_API_KEY is configured)
- * 3. Optional Cloudflare Email Routing binding (if env.SEND_EMAIL is present)
+ * Sends a support notification email to the configured SUPPORT_EMAIL via Resend.
+ * Requires RESEND_API_KEY (secret) and a verified sender domain (EMAIL_FROM).
  */
 export async function sendSupportNotificationEmail(
   supportEmail: string,
   ticket: SupportTicketData,
-  meta?: EmailMeta
+  meta?: EmailMeta,
+  env?: EmailEnv
 ): Promise<{ success: boolean; error?: string }> {
   const categoryLabels: Record<string, string> = {
     crypto_transaction: '🪙 Crypto Transaction Assistance',
@@ -136,51 +139,40 @@ Reply directly to this email to respond to the user at: ${ticket.userEmail}
 </html>
 `.trim();
 
-  // 1. Attempt sending via MailChannels API
+  if (!env?.RESEND_API_KEY) {
+    console.warn('[Support] RESEND_API_KEY not configured — notification email skipped');
+    return { success: false, error: 'Email provider not configured' };
+  }
+
+  const fromAddress = env.EMAIL_FROM || 'Vectorizerr Support <your-support-email@example.com>';
+
   try {
-    const mailChannelsRes = await fetch('https://api.mailchannels.net/tx/v1/send', {
+    const resendRes = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
       },
       body: JSON.stringify({
-        personalizations: [
-          {
-            to: [{ email: supportEmail, name: 'Vectorizerr Admin' }],
-          },
-        ],
-        from: {
-          email: 'your-support-email@example.com',
-          name: 'Vectorizerr Support Portal',
-        },
-        reply_to: {
-          email: ticket.userEmail,
-          name: ticket.name || 'Vectorizerr User',
-        },
-        subject: subject,
-        content: [
-          {
-            type: 'text/plain',
-            value: plainTextBody,
-          },
-          {
-            type: 'text/html',
-            value: htmlBody,
-          },
-        ],
+        from: fromAddress,
+        to: [supportEmail],
+        reply_to: ticket.userEmail,
+        subject,
+        text: plainTextBody,
+        html: htmlBody,
       }),
     });
 
-    if (mailChannelsRes.ok || mailChannelsRes.status === 202) {
-      console.log(`[Support] Notification email sent successfully via MailChannels to ${supportEmail}`);
+    if (resendRes.ok) {
+      console.log(`[Support] Notification email sent via Resend to ${supportEmail}`);
       return { success: true };
     }
 
-    const errText = await mailChannelsRes.text().catch(() => '');
-    console.warn(`[Support] MailChannels delivery status: ${mailChannelsRes.status}: ${errText}`);
-    return { success: false, error: `MailChannels status ${mailChannelsRes.status}: ${errText}` };
+    const errText = await resendRes.text().catch(() => '');
+    console.warn(`[Support] Resend delivery status: ${resendRes.status}: ${errText}`);
+    return { success: false, error: `Resend status ${resendRes.status}: ${errText}` };
   } catch (err: any) {
-    console.warn('[Support] MailChannels transport error:', err);
-    return { success: false, error: err?.message || 'Transport error' };
+    console.warn('[Support] Resend transport error:', err);
+    return { success: false, error: err?.message || 'Resend transport error' };
   }
 }

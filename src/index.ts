@@ -29,6 +29,8 @@ export interface Env {
   TESTNET_SECRET?: string;
   WALLET_ENCRYPTION_SECRET?: string;
   SUPPORT_EMAIL?: string;
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string;
   TRANSACTION_SCHEDULER?: DurableObjectNamespace<TransactionScheduler>;
 }
 
@@ -590,7 +592,7 @@ export default {
         userAgent: request.headers.get("user-agent") || undefined,
       };
 
-      const emailResult = await sendSupportNotificationEmail(targetSupportEmail, ticketData, meta);
+      const emailResult = await sendSupportNotificationEmail(targetSupportEmail, ticketData, meta, env);
 
       if (env.FIREBASE_PROJECT_ID) {
         try {

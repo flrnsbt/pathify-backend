@@ -38,6 +38,7 @@
     "FIREBASE_CLIENT_EMAIL": "your-service-account@vectorizerr.iam.gserviceaccount.com",
     "FIREBASE_PROJECT_ID": "vectorizerr",
     "REQUIRED_CONFIRMATIONS": "1",
-    "SUPPORT_EMAIL": "your-support-email@example.com"
+    "SUPPORT_EMAIL": "your-support-email@example.com",
+    "EMAIL_FROM": "Vectorizerr Support <your-support-email@example.com>"
   }
 }
