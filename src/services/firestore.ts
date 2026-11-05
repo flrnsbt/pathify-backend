@@ -607,6 +607,42 @@ export async function atomicUnlockImage(
   return false;
 }
 
+/**
+ * Records that a generation (keyed by SVG content hash) has been validated —
+ * i.e. quota was consumed for it. Account-scoped and independent of the
+ * source-image history docs, so re-exports of the same SVG stay free even
+ * after the history entry was deleted. Idempotent upsert via PATCH.
+ */
+export async function markGenerationValidated(
+  projectId: string,
+  accessToken: string | null,
+  userId: string,
+  imageHash: string,
+  generationId: string
+): Promise<void> {
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/validatedGenerations/${generationId}`;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({
+      fields: {
+        userId: { stringValue: userId },
+        imageHash: { stringValue: imageHash },
+        generationId: { stringValue: generationId },
+        createdAt: { integerValue: String(Date.now()) },
+      },
+    }),
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    console.error(`[markGenerationValidated] Failed (${res.status}): ${errText}`);
+  }
+}
+
 export type ConsumeGenerationResult = 'ok' | 'conflict' | 'error';
 
 /**

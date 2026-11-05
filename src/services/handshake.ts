@@ -1,6 +1,6 @@
 import { Env } from '../index';
 import { verifyWorkerSecurity } from './security';
-import { getGoogleAccessToken, atomicUnlockImage, atomicConsumeGeneration } from './firestore';
+import { getGoogleAccessToken, atomicUnlockImage, atomicConsumeGeneration, markGenerationValidated } from './firestore';
 import { GENERATIONS_PER_UNLOCK } from '../config/limits';
 
 /**
@@ -97,7 +97,7 @@ export async function handleCryptographicHandshake(
 
   try {
     const body = (await request.json().catch(() => ({}))) as any;
-    const { action, imageHash } = body;
+    const { action, imageHash, generationId } = body;
 
     if (!imageHash || !isValidImageHash(imageHash)) {
       return new Response(
@@ -105,6 +105,13 @@ export async function handleCryptographicHandshake(
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
+
+    // generationId is the SVG content hash — recorded as a validated generation
+    // marker so re-exports of the same SVG stay free account-wide.
+    const validGenerationId =
+      typeof generationId === 'string' && /^[0-9a-fA-F]{16,128}$/.test(generationId)
+        ? generationId
+        : null;
 
     if (!action || (action !== 'unlock_image' && action !== 'consume_generation')) {
       return new Response(
@@ -251,6 +258,9 @@ export async function handleCryptographicHandshake(
       );
     } else if (action === 'consume_generation') {
       if (isSubscribed) {
+        if (validGenerationId) {
+          await markGenerationValidated(projectId, accessToken, userId, imageHash, validGenerationId);
+        }
         const { ticketId, nonce, signature } = await generateTicket(
           secret, userId, imageHash, 9999, 0, 9999, expiresAt, now
         );
@@ -344,6 +354,10 @@ export async function handleCryptographicHandshake(
           JSON.stringify({ success: false, error: 'Quota check contention, please retry.' }),
           { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
+      }
+
+      if (validGenerationId) {
+        await markGenerationValidated(projectId, accessToken, userId, imageHash, validGenerationId);
       }
 
       // Only issue ticket after successful write
