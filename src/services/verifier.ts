@@ -16,6 +16,16 @@ export interface VerificationResult {
   blockNumber?: number;
 }
 
+/** Structured verification logging so pending/failed txs are diagnosable from worker logs. */
+function vlog(txId: string | undefined, step: string, data?: Record<string, unknown>): void {
+  const prefix = txId ? `[VERIFY ${txId}]` : "[VERIFY]";
+  if (data) {
+    console.log(`${prefix} ${step}`, JSON.stringify(data));
+  } else {
+    console.log(`${prefix} ${step}`);
+  }
+}
+
 /**
  * Standard JSON-RPC caller with multiple fallback endpoints
  */
@@ -42,6 +52,7 @@ async function callEvmRpc(
   let lastError: Error | null = null;
   for (const rpcUrl of rpcUrls) {
     try {
+      const started = Date.now();
       const res = await fetch(rpcUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -53,15 +64,21 @@ async function callEvmRpc(
         }),
       });
 
-      if (!res.ok) continue;
+      if (!res.ok) {
+        console.warn(`[RPC] ${method} on ${rpcUrl} -> HTTP ${res.status} (${Date.now() - started}ms)`);
+        continue;
+      }
       const data = (await res.json()) as any;
       if (data.error) {
         lastError = new Error(data.error.message || "RPC Error");
+        console.warn(`[RPC] ${method} on ${rpcUrl} -> error: ${lastError.message} (${Date.now() - started}ms)`);
         continue;
       }
+      console.log(`[RPC] ${method} on ${rpcUrl} -> ok (${Date.now() - started}ms)`);
       return data.result;
     } catch (err: any) {
       lastError = err;
+      console.warn(`[RPC] ${method} on ${rpcUrl} -> threw: ${err?.message}`);
     }
   }
 
@@ -108,10 +125,21 @@ async function verifyEvmTransaction(
   expectedAmount: string,
   token: SupportedToken,
   chainId?: number,
+  txId?: string,
 ): Promise<VerificationResult> {
   try {
+    vlog(txId, "evm.verify.start", {
+      chainKey,
+      chainId,
+      txHash,
+      token,
+      expectedRecipient,
+      expectedAmount,
+    });
+
     // SECURITY: Validate that recipient is a configured wallet address
     if (!isValidWalletAddress(expectedRecipient)) {
+      vlog(txId, "evm.verify.fail", { reason: "recipient-not-configured", expectedRecipient });
       return {
         isConfirmed: false,
         isFailed: true,
@@ -123,12 +151,21 @@ async function verifyEvmTransaction(
     // Resolve chain config from chainId (single source of truth)
     const chain = chainId != null ? CHAIN_ID_CONFIG[chainId] : undefined;
     if (!chain) {
+      vlog(txId, "evm.verify.fail", { reason: "unknown-chainId", chainId });
       return {
         isConfirmed: false,
         isFailed: true,
         statusMessage: `Unknown chainId: ${chainId}`,
       };
     }
+    vlog(txId, "evm.verify.chain-resolved", {
+      resolvedKey: chain.key,
+      resolvedName: chain.name,
+      resolvedChainId: chain.chainId,
+      isEvm: chain.isEvm,
+      nativeToken: chain.nativeToken,
+      rpcCount: chain.rpcUrls.length,
+    });
 
     let receipt = await callEvmRpc(
       chainKey,
@@ -139,6 +176,7 @@ async function verifyEvmTransaction(
 
     // Transaction not yet mined
     if (!receipt) {
+      vlog(txId, "evm.verify.pending", { reason: "receipt-not-found", txHash, chainId });
       return {
         isConfirmed: false,
         isFailed: false,
@@ -146,8 +184,15 @@ async function verifyEvmTransaction(
       };
     }
 
+    vlog(txId, "evm.verify.receipt", {
+      status: receipt.status,
+      blockNumber: receipt.blockNumber,
+      logCount: (receipt.logs || []).length,
+    });
+
     // Status: 0x0 is reverted/failed, 0x1 is success
     if (receipt.status === "0x0") {
+      vlog(txId, "evm.verify.fail", { reason: "tx-reverted", txHash });
       return {
         isConfirmed: false,
         isFailed: true,
@@ -156,6 +201,7 @@ async function verifyEvmTransaction(
     }
 
     const isNative = token === chain.nativeToken;
+    vlog(txId, "evm.verify.mode", { isNative, token, nativeToken: chain.nativeToken });
 
     if (isNative) {
       // Verify Native transfer (ETH, BNB, POL, AVAX, XPL)
@@ -166,6 +212,7 @@ async function verifyEvmTransaction(
         chainId,
       );
       if (!tx) {
+        vlog(txId, "evm.verify.pending", { reason: "tx-body-not-found", txHash });
         return {
           isConfirmed: false,
           isFailed: false,
@@ -176,8 +223,15 @@ async function verifyEvmTransaction(
 
       const txTo = (tx.to || "").toLowerCase();
       const expectedTo = expectedRecipient.toLowerCase();
+      vlog(txId, "evm.verify.native-check", {
+        txTo,
+        expectedTo,
+        txValue: tx.value,
+        expectedAmount,
+      });
 
       if (txTo !== expectedTo) {
+        vlog(txId, "evm.verify.fail", { reason: "recipient-mismatch", txTo, expectedTo });
         return {
           isConfirmed: false,
           isFailed: true,
@@ -191,6 +245,12 @@ async function verifyEvmTransaction(
       // Allow 1% tolerance for gas estimation or rounding differences
       const minRequired = (expectedWei * 99n) / 100n;
       if (actualWei < minRequired) {
+        vlog(txId, "evm.verify.fail", {
+          reason: "amount-insufficient",
+          expectedWei: expectedWei.toString(),
+          actualWei: actualWei.toString(),
+          minRequired: minRequired.toString(),
+        });
         return {
           isConfirmed: false,
           isFailed: true,
@@ -198,6 +258,7 @@ async function verifyEvmTransaction(
         };
       }
 
+      vlog(txId, "evm.verify.confirmed", { path: "native", blockNumber: receipt.blockNumber });
       return {
         isConfirmed: true,
         isFailed: false,
@@ -212,12 +273,24 @@ async function verifyEvmTransaction(
 
       // SECURITY FIX: Reject unconfigured token contracts to prevent log spoofing attacks
       if (!contractConfig?.address) {
+        vlog(txId, "evm.verify.fail", {
+          reason: "contract-not-configured",
+          effectiveId,
+          token,
+          availableChains: Object.keys(ERC20_CONTRACTS),
+        });
         return {
           isConfirmed: false,
           isFailed: true,
           statusMessage: `ERC-20 token ${token} address configuration missing for chain ID ${effectiveId}.`,
         };
       }
+      vlog(txId, "evm.verify.contract", {
+        effectiveId,
+        token,
+        contractAddress: contractConfig.address,
+        decimals: contractConfig.decimals,
+      });
 
       const decimals =
         contractConfig.decimals ||
@@ -228,16 +301,18 @@ async function verifyEvmTransaction(
 
       let transferFound = false;
       let transferredAmount = 0n;
+      const scannedLogs: Array<{ address: string; topic0?: string; matched: boolean }> = [];
 
       for (const log of receipt.logs || []) {
         if (!log.topics || log.topics.length < 3) continue;
         if (log.topics[0].toLowerCase() !== transferTopic) continue;
 
         // SECURITY FIX: Strict contract address matching required
-        if (
-          !log.address ||
-          log.address.toLowerCase() !== contractConfig.address.toLowerCase()
-        ) {
+        const contractMatch =
+          !!log.address &&
+          log.address.toLowerCase() === contractConfig.address.toLowerCase();
+        scannedLogs.push({ address: log.address, topic0: log.topics[0], matched: contractMatch });
+        if (!contractMatch) {
           continue;
         }
 
@@ -247,8 +322,16 @@ async function verifyEvmTransaction(
           transferredAmount += BigInt(log.data || "0x0");
         }
       }
+      vlog(txId, "evm.verify.log-scan", {
+        transferLogsFound: scannedLogs.length,
+        transferFound,
+        transferredAmount: transferredAmount.toString(),
+        expectedRecipientTopic: expectedPaddedRecipient,
+        scannedLogs: scannedLogs.slice(0, 10),
+      });
 
       if (!transferFound) {
+        vlog(txId, "evm.verify.fail", { reason: "no-transfer-event", expectedRecipient });
         return {
           isConfirmed: false,
           isFailed: true,
@@ -260,6 +343,13 @@ async function verifyEvmTransaction(
       const minRequired = (expectedUnits * 99n) / 100n;
 
       if (transferredAmount < minRequired) {
+        vlog(txId, "evm.verify.fail", {
+          reason: "token-amount-insufficient",
+          transferredAmount: transferredAmount.toString(),
+          expectedUnits: expectedUnits.toString(),
+          minRequired: minRequired.toString(),
+          decimals,
+        });
         return {
           isConfirmed: false,
           isFailed: true,
@@ -267,6 +357,7 @@ async function verifyEvmTransaction(
         };
       }
 
+      vlog(txId, "evm.verify.confirmed", { path: "erc20", blockNumber: receipt.blockNumber });
       return {
         isConfirmed: true,
         isFailed: false,
@@ -276,6 +367,7 @@ async function verifyEvmTransaction(
       };
     }
   } catch (err: any) {
+    vlog(txId, "evm.verify.error", { error: err?.message, stack: err?.stack });
     return {
       isConfirmed: false,
       isFailed: false,
@@ -292,9 +384,12 @@ async function verifyBtcTransaction(
   expectedRecipient: string,
   expectedAmount: string,
   createdAtMs: number,
+  txId?: string,
 ): Promise<VerificationResult> {
+  vlog(txId, "btc.verify.start", { txHash, expectedRecipient, expectedAmount });
   // SECURITY: Validate that recipient is a configured wallet address
   if (!isValidWalletAddress(expectedRecipient)) {
+    vlog(txId, "btc.verify.fail", { reason: "recipient-not-configured", expectedRecipient });
     return {
       isConfirmed: false,
       isFailed: true,
@@ -436,16 +531,28 @@ async function verifyBtcTransaction(
 export async function verifyCryptoTransaction(
   tx: CryptoTransactionDoc,
 ): Promise<VerificationResult> {
+  vlog(tx.id, "tx.verify.dispatch", {
+    chainKey: tx.chainKey,
+    chainId: tx.chainId,
+    cryptoToken: tx.cryptoToken,
+    txHash: tx.txHash ? `${tx.txHash.slice(0, 10)}…` : "(none)",
+    toAddress: tx.toAddress,
+    cryptoAmount: tx.cryptoAmount,
+    paymentMethod: (tx as any).paymentMethod,
+  });
+
   if (tx.chainKey === "btc") {
     return await verifyBtcTransaction(
       tx.txHash,
       tx.toAddress,
       tx.cryptoAmount,
       tx.createdAt,
+      tx.id,
     );
   }
 
   if (!tx.txHash || !tx.txHash.startsWith("0x")) {
+    vlog(tx.id, "tx.verify.pending", { reason: "no-txhash", chainKey: tx.chainKey });
     return {
       isConfirmed: false,
       isFailed: false,
@@ -453,12 +560,19 @@ export async function verifyCryptoTransaction(
     };
   }
 
-  return await verifyEvmTransaction(
+  const result = await verifyEvmTransaction(
     tx.chainKey,
     tx.txHash,
     tx.toAddress,
     tx.cryptoAmount,
     tx.cryptoToken,
     tx.chainId,
+    tx.id,
   );
+  vlog(tx.id, "tx.verify.result", {
+    isConfirmed: result.isConfirmed,
+    isFailed: result.isFailed,
+    statusMessage: result.statusMessage,
+  });
+  return result;
 }

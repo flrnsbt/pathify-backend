@@ -12,7 +12,7 @@ import { handleCryptographicHandshake } from "./services/handshake";
 import { sendSupportNotificationEmail } from "./services/email";
 import { verifyWorkerSecurity } from "./services/security";
 import type { TransactionScheduler } from "./services/scheduler";
-import { getChainsConfig, getERC20ContractsForChains, SupportedChainKey, SupportedToken } from "./config/chains";
+import { getChainsConfig, getERC20ContractsForChains, SupportedChainKey, SupportedToken, DEFAULT_TESTNET_CHAIN_IDS } from "./config/chains";
 import { getWalletAddresses, findWalletAddress } from "./config/wallets";
 import { CREDIT_PACKS, findPackById, getTokenPriceUsd, calculateCryptoAmount } from "./config/packs";
 
@@ -97,6 +97,11 @@ export async function processPendingTransactions(
     try {
       console.log(`[PROCESSING] Tx ${tx.id} for user ${tx.userId} on chain ${tx.chainKey} (${tx.cryptoToken})`);
       const verification = await verifyCryptoTransaction(tx);
+      console.log(
+        `[VERIFY-RESULT] Tx ${tx.id} chainKey=${tx.chainKey} chainId=${tx.chainId} ` +
+        `confirmed=${verification.isConfirmed} failed=${verification.isFailed} ` +
+        `msg="${verification.statusMessage}"`,
+      );
 
       if (verification.isConfirmed) {
         const confirmedAt = Date.now();
@@ -311,7 +316,7 @@ export default {
       const security = await verifyWorkerSecurity(request, env, { requireAuth: true });
       if (!security.isValid) return security.errorResponse!;
 
-      let body: { packId: string; chainKey: SupportedChainKey; txHash?: string; cryptoToken?: SupportedToken; paymentMethod?: string; fromAddress?: string; statusMessage?: string } = {} as any;
+      let body: { packId: string; chainKey: SupportedChainKey; chainId?: number; txHash?: string; cryptoToken?: SupportedToken; paymentMethod?: string; fromAddress?: string; statusMessage?: string } = {} as any;
       try {
         body = await request.json();
       } catch {
@@ -339,6 +344,34 @@ export default {
         return new Response(JSON.stringify({ error: "Invalid chainKey" }), {
           status: 400, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
         });
+      }
+
+      // Mode consistency checks: the client-supplied chainId must agree with the
+      // network mode resolved from the testnet secret, and testnet chainIds are
+      // only accepted when the secret is valid.
+      const providedChainId = body.chainId != null ? Number(body.chainId) : undefined;
+      const isTestnetChainId = providedChainId != null &&
+        Object.values(DEFAULT_TESTNET_CHAIN_IDS).includes(providedChainId) &&
+        providedChainId !== 0;
+
+      if (isTestnetChainId && !isTestnet) {
+        return new Response(
+          JSON.stringify({ error: "Testnet transactions require a valid testnet secret." }),
+          { status: 403, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      if (
+        providedChainId != null &&
+        chainConfig.chainId != null &&
+        providedChainId !== chainConfig.chainId
+      ) {
+        return new Response(
+          JSON.stringify({
+            error: `chainId mismatch: client sent ${providedChainId} but mode resolves to ${chainConfig.chainId}.`,
+          }),
+          { status: 400, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
+        );
       }
 
       const cryptoToken = (body.cryptoToken || chainConfig.nativeToken) as SupportedToken;
