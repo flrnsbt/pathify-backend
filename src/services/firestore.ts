@@ -546,13 +546,19 @@ export async function atomicUnlockImage(
           update: {
             name: userDocPath,
             fields: {
-              [`unlockedImages.\`${imageHash}\``]: {
+              unlockedImages: {
                 mapValue: {
                   fields: {
-                    imageHash: { stringValue: imageHash },
-                    generationsUsed: { integerValue: '0' },
-                    maxGenerations: { integerValue: String(GENERATIONS_PER_UNLOCK) },
-                    unlockedAt: { integerValue: String(unlockedAt) },
+                    [imageHash]: {
+                      mapValue: {
+                        fields: {
+                          imageHash: { stringValue: imageHash },
+                          generationsUsed: { integerValue: '0' },
+                          maxGenerations: { integerValue: String(GENERATIONS_PER_UNLOCK) },
+                          unlockedAt: { integerValue: String(unlockedAt) },
+                        },
+                      },
+                    },
                   },
                 },
               },
