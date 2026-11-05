@@ -317,8 +317,11 @@ export async function handleCryptographicHandshake(
           );
         }
 
+        const quotaEpoch = freshUnlock?.unlockedAt?.integerValue
+          ? Number(freshUnlock.unlockedAt.integerValue)
+          : 0;
         const result = await atomicConsumeGeneration(
-          projectId, accessToken, userId, imageHash, freshUsed
+          projectId, accessToken, userId, imageHash, quotaEpoch, freshUsed
         );
         if (result === 'ok') {
           consumed = true;

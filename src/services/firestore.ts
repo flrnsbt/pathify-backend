@@ -613,23 +613,26 @@ export type ConsumeGenerationResult = 'ok' | 'conflict' | 'error';
  * Atomically consumes one generation for an unlocked image.
  *
  * Uses a slot-claim pattern: the commit creates
- * `users/{uid}/image_quota/{imageHash}_{slotIndex}` with an
+ * `users/{uid}/image_quota/{imageHash}_{quotaEpoch}_{slotIndex}` with an
  * exists=false precondition AND increments generationsUsed — all in one
  * atomic commit. Two concurrent consumers claiming the same slot index
  * cannot both succeed; the loser gets 'conflict' and must re-read state.
+ * `quotaEpoch` (the unlock's unlockedAt timestamp) namespaces slots per
+ * unlock so re-unlocking an image doesn't collide with old slot docs.
  */
 export async function atomicConsumeGeneration(
   projectId: string,
   accessToken: string | null,
   userId: string,
   imageHash: string,
+  quotaEpoch: number,
   slotIndex: number,
   maxAttempts = 3
 ): Promise<ConsumeGenerationResult> {
   const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:commit`;
 
   const userDocPath = `projects/${projectId}/databases/(default)/documents/users/${userId}`;
-  const slotDocPath = `projects/${projectId}/databases/(default)/documents/users/${userId}/image_quota/${imageHash}_${slotIndex}`;
+  const slotDocPath = `projects/${projectId}/databases/(default)/documents/users/${userId}/image_quota/${imageHash}_${quotaEpoch}_${slotIndex}`;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const commitBody = {
@@ -640,6 +643,7 @@ export async function atomicConsumeGeneration(
             name: slotDocPath,
             fields: {
               imageHash: { stringValue: imageHash },
+              quotaEpoch: { integerValue: String(quotaEpoch) },
               slotIndex: { integerValue: String(slotIndex) },
             },
           },
