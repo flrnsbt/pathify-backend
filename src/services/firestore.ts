@@ -454,7 +454,10 @@ export interface CreateTransactionInput {
   chainKey: string;
   chainId?: number;
   toAddress: string;
-  txHash: string;
+  txHash?: string;
+  paymentMethod?: "web3" | "direct";
+  fromAddress?: string;
+  statusMessage?: string;
 }
 
 /**
@@ -472,9 +475,9 @@ export async function createTransactionDoc(
   const txData = {
     ...data,
     id: docId,
-    paymentMethod: 'web3',
+    paymentMethod: data.paymentMethod ?? 'web3',
     status: 'pending' as const,
-    statusMessage: 'Awaiting blockchain confirmation.',
+    statusMessage: data.statusMessage ?? 'Awaiting blockchain confirmation.',
     createdAt: now,
     updatedAt: now,
   };

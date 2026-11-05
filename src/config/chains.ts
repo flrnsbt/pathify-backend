@@ -454,7 +454,7 @@ export const ERC20_CONTRACTS: Record<
   },
   11155111: {
     USDT: {
-      address: "0xab868415803cf3bdd382197159001bc0c0f3b6c2",
+      address: "0x7169d38820dfd117c3fa1f22a697dba58d90ba06",
       decimals: 18,
     },
     USDC: {
@@ -464,21 +464,21 @@ export const ERC20_CONTRACTS: Record<
   },
   97: {
     USDT: {
-      address: "0x337610d27c682e347c9cd60bd4b3b107c9632205",
+      address: "0xf4B41a53b67652E83f59df082F3CA342252b7E20",
       decimals: 18,
     },
     USDC: {
-      address: "0x365476358d411c625e2e438f27a75f4c72950716",
+      address: "0x64544969ed7EBf5f083679233325356EbE738930",
       decimals: 18,
     },
   },
   80002: {
     USDT: {
-      address: "0x056fd409e1d491d221329e89416b166c23615001",
+      address: "0x164F5A056166d8F2ce09FdAc6d040209a8C94d01",
       decimals: 6,
     },
     USDC: {
-      address: "0x4129df7f446d49eaaf11e71f2c19d1fb80714c66",
+      address: "0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582",
       decimals: 6,
     },
   },
@@ -489,16 +489,16 @@ export const ERC20_CONTRACTS: Record<
     },
   },
   421614: {
-    USDT: {
-      address: "0x250e7d8c26740fc616921369a0738f7a2ce69f85",
-      decimals: 6,
-    },
     USDC: {
       address: "0x75faf114edb188e3173481b5cade5cf340a529f3",
       decimals: 6,
     },
   },
   11155420: {
+    USDT: {
+      address: "0xDCa91575A8bb40a1EbC4C8985d0d05fbfb16D9d6",
+      decimals: 6,
+    },
     USDC: {
       address: "0x5fd84259d66cd46123540766be93dfe6d43133df",
       decimals: 6,
@@ -506,11 +506,17 @@ export const ERC20_CONTRACTS: Record<
   },
   43113: {
     USDT: {
-      address: "0x056fd409e1d491d221329e89416b166c23615001",
+      address: "0x04A5d3a6eDb6c2cb0A17B3BF2cD0D25efCB38679",
       decimals: 6,
     },
     USDC: {
       address: "0x5425890298aed601595a70ab815c96711a31bc65",
+      decimals: 6,
+    },
+  },
+  9746: {
+    USDC: {
+      address: "0xE67Fb267022cBA8064Dd388CC2FED724F3120D9D",
       decimals: 6,
     },
   },

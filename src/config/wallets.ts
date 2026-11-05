@@ -1,5 +1,6 @@
 import { SupportedChainKey, SupportedToken } from "./chains";
-import wallets from "./wallets.mainnet.json";
+import walletsMainnet from "./wallets.mainnet.json";
+import walletsTestnet from "./wallets.testnet.json";
 
 export interface WalletConfig {
   chainKey: SupportedChainKey;
@@ -13,10 +14,12 @@ interface WalletsJson {
 }
 
 /**
- * Get wallet addresses from configuration
+ * Get wallet addresses from configuration.
+ * Returns testnet wallets when testnet mode is active, mainnet otherwise.
  */
-export function getWalletAddresses(): WalletConfig[] {
-  return (wallets as WalletsJson).wallets || [];
+export function getWalletAddresses(testnet = false): WalletConfig[] {
+  const source = (testnet ? walletsTestnet : walletsMainnet) as WalletsJson;
+  return source.wallets || [];
 }
 
 /**
@@ -26,8 +29,9 @@ export function findWalletAddress(
   chainKey: SupportedChainKey,
   token: SupportedToken,
   chainId?: number,
+  testnet = false,
 ): string | null {
-  const wallets = getWalletAddresses();
+  const wallets = getWalletAddresses(testnet);
 
   if (chainId) {
     const exact = wallets.find(
@@ -52,7 +56,10 @@ export function findWalletAddress(
  * Validate if an address is a configured wallet address
  */
 export function isValidWalletAddress(address: string): boolean {
-  const wallets = getWalletAddresses();
+  const wallets = [
+    ...getWalletAddresses(false),
+    ...getWalletAddresses(true),
+  ];
   const normalized = address.toLowerCase();
   return wallets.some((w) => w.address.toLowerCase() === normalized);
 }

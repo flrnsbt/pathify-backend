@@ -236,7 +236,7 @@ export default {
       if (!security.isValid) return security.errorResponse!;
 
       const chainsConfig = getChainsConfig(isTestnet);
-      const wallets = getWalletAddresses();
+      const wallets = getWalletAddresses(isTestnet);
 
       // Build price map for all tokens across all chains
       const tokenSymbols = new Set<SupportedToken>();
@@ -311,7 +311,7 @@ export default {
       const security = await verifyWorkerSecurity(request, env, { requireAuth: true });
       if (!security.isValid) return security.errorResponse!;
 
-      let body: { packId: string; chainKey: SupportedChainKey; txHash: string; cryptoToken?: SupportedToken } = {} as any;
+      let body: { packId: string; chainKey: SupportedChainKey; txHash?: string; cryptoToken?: SupportedToken; paymentMethod?: string; fromAddress?: string; statusMessage?: string } = {} as any;
       try {
         body = await request.json();
       } catch {
@@ -320,8 +320,9 @@ export default {
         });
       }
 
-      if (!body.packId || !body.chainKey || !body.txHash) {
-        return new Response(JSON.stringify({ error: "Missing packId, chainKey, or txHash" }), {
+      // txHash is optional: direct/QR payments are created before a hash exists
+      if (!body.packId || !body.chainKey) {
+        return new Response(JSON.stringify({ error: "Missing packId or chainKey" }), {
           status: 400, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
         });
       }
@@ -349,7 +350,7 @@ export default {
         });
       }
 
-      const toAddress = findWalletAddress(body.chainKey, cryptoToken, chainConfig.chainId) || "";
+      const toAddress = findWalletAddress(body.chainKey, cryptoToken, chainConfig.chainId, isTestnet) || "";
       if (!toAddress) {
         return new Response(JSON.stringify({ error: "No wallet configured for this chain/token" }), {
           status: 503, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
@@ -369,7 +370,10 @@ export default {
         chainKey: body.chainKey,
         chainId: chainConfig.chainId,
         toAddress,
-        txHash: body.txHash,
+        txHash: body.txHash || "",
+        paymentMethod: body.paymentMethod === "direct" ? "direct" : "web3",
+        fromAddress: body.fromAddress,
+        statusMessage: body.statusMessage,
       });
 
       activateTransactionTracking();
