@@ -802,49 +802,152 @@ export async function confirmAndCreditAtomically(
   }
 }
 
-export interface CreateHistoryInput {
+/**
+ * Fetches a single Firestore document's parsed fields, or null when missing.
+ * `docPath` is relative to the database root, e.g. `users/{uid}/history/{id}`.
+ */
+async function getFirestoreDocFields(
+  projectId: string,
+  accessToken: string | null,
+  docPath: string
+): Promise<Record<string, any> | null> {
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${docPath}`;
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
+
+  const res = await fetch(url, { headers });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    console.warn(`Firestore GET ${docPath} failed:`, res.status, await res.text());
+    return null;
+  }
+  const doc = (await res.json()) as any;
+  return parseFirestoreFields(doc.fields);
+}
+
+export interface SaveGenerationInput {
   userId: string;
   imageHash: string;
+  generationId?: string;
   svg: string;
   [key: string]: any;
 }
 
+export interface SaveGenerationResult {
+  historyId: string;
+  generationId: string;
+  deduped: boolean;
+}
+
 /**
- * Creates a history item in users/{userId}/history subcollection.
- * Timestamps are set server-side.
+ * Saves a validated generation under the source-image history entry:
+ * `users/{userId}/history/{imageHash}` holds image-level data, and each
+ * generation lives in its `generations` subcollection keyed by generationId
+ * (the SVG content hash), making saves idempotent.
  */
-export async function createHistoryDoc(
+export async function saveGenerationDoc(
   projectId: string,
   accessToken: string | null,
-  data: CreateHistoryInput
-): Promise<string> {
+  data: SaveGenerationInput
+): Promise<SaveGenerationResult> {
   const now = Date.now();
-  const docId = `hist_${now}_${crypto.randomUUID().slice(0, 8)}`;
+  const historyId = data.imageHash || `hist_${now}_${crypto.randomUUID().slice(0, 8)}`;
+  const generationId = data.generationId || `gen_${now}_${crypto.randomUUID().slice(0, 8)}`;
 
-  const historyData = {
-    ...data,
-    id: docId,
+  const docRoot = `projects/${projectId}/databases/(default)/documents`;
+  const histPath = `users/${data.userId}/history/${historyId}`;
+  const histDocPath = `${docRoot}/${histPath}`;
+  const genDocPath = `${histDocPath}/generations/${generationId}`;
+
+  const { userId: _u, generationId: _g, createdAt: _c, ...genRest } = data;
+  const generationFields = toFirestoreFields({
+    id: generationId,
+    generationId,
+    userId: data.userId,
     createdAt: now,
+    ...genRest,
+  });
+
+  const histMutable = {
+    imageHash: data.imageHash,
+    fileName: data.fileName,
+    originalDimensions: data.originalDimensions,
+    originalSize: data.originalSize,
+    updatedAt: now,
   };
 
-  const fields = toFirestoreFields(historyData);
-  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${data.userId}/history?documentId=${docId}`;
-
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:commit`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (accessToken) {
     headers['Authorization'] = `Bearer ${accessToken}`;
   }
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ fields }),
-  });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    // Idempotent: generation already stored -> nothing to do
+    const existingGen = await getFirestoreDocFields(projectId, accessToken, `${histPath}/generations/${generationId}`);
+    if (existingGen) {
+      return { historyId, generationId, deduped: true };
+    }
+    const histExists = (await getFirestoreDocFields(projectId, accessToken, histPath)) !== null;
 
-  if (!res.ok) {
+    const writes: any[] = [
+      {
+        update: { name: genDocPath, fields: generationFields },
+        currentDocument: { exists: false },
+      },
+    ];
+
+    if (histExists) {
+      const histFields = toFirestoreFields(histMutable);
+      writes.push({
+        update: {
+          name: histDocPath,
+          fields: histFields,
+          updateMask: { fieldPaths: Object.keys(histFields) },
+        },
+        currentDocument: { exists: true },
+      });
+    } else {
+      writes.push({
+        update: {
+          name: histDocPath,
+          fields: toFirestoreFields({
+            id: historyId,
+            userId: data.userId,
+            imageHash: data.imageHash,
+            fileName: data.fileName,
+            originalDimensions: data.originalDimensions,
+            originalSize: data.originalSize,
+            createdAt: now,
+            updatedAt: now,
+          }),
+        },
+        currentDocument: { exists: false },
+      });
+    }
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ writes }),
+    });
+
+    if (res.ok) {
+      return { historyId, generationId, deduped: false };
+    }
+
     const errText = await res.text().catch(() => '');
-    throw new Error(`Failed to create history document in Firestore (${res.status}): ${errText}`);
+    if (
+      (res.status === 400 || res.status === 409) &&
+      (errText.includes('FAILED_PRECONDITION') || errText.includes('ALREADY_EXISTS'))
+    ) {
+      continue;
+    }
+
+    throw new Error(`Failed to save generation in Firestore (${res.status}): ${errText}`);
   }
 
-  return docId;
+  throw new Error('Failed to save generation in Firestore: precondition retries exhausted');
 }

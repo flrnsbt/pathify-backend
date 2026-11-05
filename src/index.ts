@@ -5,7 +5,7 @@ import {
   confirmAndCreditAtomically,
   createSupportTicketDoc,
   createTransactionDoc,
-  createHistoryDoc,
+  saveGenerationDoc,
 } from "./services/firestore";
 import { verifyCryptoTransaction } from "./services/verifier";
 import { handleCryptographicHandshake } from "./services/handshake";
@@ -514,15 +514,15 @@ export default {
       const projectId = env.FIREBASE_PROJECT_ID as string;
       const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
 
-      // Strip server-controlled and deprecated fields: userId/createdAt are set
-      // server-side; originalBase64 (raw source image) is no longer stored.
+      // Strip server-controlled fields: userId/createdAt are set server-side;
+      // the raw source image (originalBase64) is no longer stored.
       const {
         userId: _ignored,
         createdAt: _ignoredCreatedAt,
         originalBase64: _ignoredImage,
         ...rest
       } = body;
-      const historyId = await createHistoryDoc(projectId, accessToken, {
+      const result = await saveGenerationDoc(projectId, accessToken, {
         imageHash: body.imageHash,
         svg: body.svg,
         ...rest,
@@ -530,7 +530,7 @@ export default {
       });
 
       return new Response(
-        JSON.stringify({ success: true, historyId }),
+        JSON.stringify({ success: true, historyId: result.historyId, generationId: result.generationId, deduped: result.deduped }),
         { status: 201, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
       );
     }
