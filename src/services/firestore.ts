@@ -543,7 +543,7 @@ export async function atomicUnlockImage(
         },
         {
           update: {
-            document: userDocPath,
+            name: userDocPath,
             fields: {
               [`unlockedImages.${imageHash}`]: {
                 mapValue: {
@@ -556,6 +556,9 @@ export async function atomicUnlockImage(
                 },
               },
             },
+          },
+          updateMask: {
+            fieldPaths: [`unlockedImages.${imageHash}`],
           },
         },
       ],

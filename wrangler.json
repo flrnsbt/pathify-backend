@@ -1,11 +1,33 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "api",
-  "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "TransactionScheduler",
+        "name": "TRANSACTION_SCHEDULER"
+      }
+    ]
+  },
+  "main": "src/index.ts",
+  "migrations": [
+    {
+      "new_sqlite_classes": [
+        "TransactionScheduler"
+      ],
+      "tag": "v1"
+    }
+  ],
+  "name": "api",
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  },
   "triggers": {
     "crons": [
       "* * * * *"
@@ -17,19 +39,5 @@
     "FIREBASE_PROJECT_ID": "vectorizerr",
     "REQUIRED_CONFIRMATIONS": "1",
     "SUPPORT_EMAIL": "your-support-email@example.com"
-  },
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "TRANSACTION_SCHEDULER",
-        "class_name": "TransactionScheduler"
-      }
-    ]
-  },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["TransactionScheduler"]
-    }
-  ]
+  }
 }
