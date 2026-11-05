@@ -522,17 +522,32 @@ export default {
         originalBase64: _ignoredImage,
         ...rest
       } = body;
-      const result = await saveGenerationDoc(projectId, accessToken, {
-        imageHash: body.imageHash,
-        svg: body.svg,
-        ...rest,
-        userId: security.user!.uid,
-      });
+      try {
+        const result = await saveGenerationDoc(projectId, accessToken, {
+          imageHash: body.imageHash,
+          svg: body.svg,
+          ...rest,
+          userId: security.user!.uid,
+        });
 
-      return new Response(
-        JSON.stringify({ success: true, historyId: result.historyId, generationId: result.generationId, deduped: result.deduped }),
-        { status: 201, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
-      );
+        return new Response(
+          JSON.stringify({ success: true, historyId: result.historyId, generationId: result.generationId, deduped: result.deduped }),
+          { status: 201, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg === 'SVG_TOO_LARGE') {
+          return new Response(
+            JSON.stringify({ error: "Generated SVG is too large to store in history." }),
+            { status: 413, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+        console.error("[save-history] Failed to save generation:", err);
+        return new Response(
+          JSON.stringify({ error: "Failed to save history." }),
+          { status: 500, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
     }
 
     // Support endpoint

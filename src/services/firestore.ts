@@ -841,6 +841,45 @@ export interface SaveGenerationResult {
   deduped: boolean;
 }
 
+// Firestore caps a single field at ~1MiB; keep margin for the rest of the doc.
+const MAX_SVG_STORAGE_BYTES = 1_000_000;
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+/**
+ * Encodes an SVG for Firestore storage as raw gzip bytes (bytesValue), avoiding
+ * the ~33% base64 inflation of the previous 'gz:' string format. Accepts either
+ * a 'gz:'-prefixed base64 payload or a raw SVG string (gzipped here).
+ * Throws 'SVG_TOO_LARGE' when the payload exceeds the field limit.
+ */
+async function encodeSvgField(svg: string): Promise<{ bytesValue: string }> {
+  let bytes: Uint8Array;
+  if (typeof svg === 'string' && svg.startsWith('gz:')) {
+    const bin = atob(svg.slice(3));
+    bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+      bytes[i] = bin.charCodeAt(i);
+    }
+  } else {
+    const stream = new Blob([svg ?? ''])
+      .stream()
+      .pipeThrough(new CompressionStream('gzip'));
+    bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  if (bytes.length > MAX_SVG_STORAGE_BYTES) {
+    throw new Error('SVG_TOO_LARGE');
+  }
+  return { bytesValue: uint8ToBase64(bytes) };
+}
+
 /**
  * Saves a validated generation under the source-image history entry:
  * `users/{userId}/history/{imageHash}` holds image-level data, and each
@@ -861,7 +900,7 @@ export async function saveGenerationDoc(
   const histDocPath = `${docRoot}/${histPath}`;
   const genDocPath = `${histDocPath}/generations/${generationId}`;
 
-  const { userId: _u, generationId: _g, createdAt: _c, ...genRest } = data;
+  const { userId: _u, generationId: _g, createdAt: _c, svg: _svg, ...genRest } = data;
   const generationFields = toFirestoreFields({
     id: generationId,
     generationId,
@@ -869,6 +908,7 @@ export async function saveGenerationDoc(
     createdAt: now,
     ...genRest,
   });
+  generationFields.svg = await encodeSvgField(data.svg);
 
   const histMutable = {
     imageHash: data.imageHash,
