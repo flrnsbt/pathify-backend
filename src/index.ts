@@ -12,7 +12,7 @@ import { handleCryptographicHandshake } from "./services/handshake";
 import { sendSupportNotificationEmail } from "./services/email";
 import { verifyWorkerSecurity } from "./services/security";
 import type { TransactionScheduler } from "./services/scheduler";
-import { getChainsConfig, SupportedChainKey, SupportedToken } from "./config/chains";
+import { getChainsConfig, getERC20ContractsForChains, SupportedChainKey, SupportedToken } from "./config/chains";
 import { getWalletAddresses, findWalletAddress } from "./config/wallets";
 import { CREDIT_PACKS, findPackById, getTokenPriceUsd, calculateCryptoAmount } from "./config/packs";
 
@@ -255,8 +255,9 @@ export default {
         return { ...pack, cryptoAmounts };
       });
 
+      const erc20Contracts = getERC20ContractsForChains(chainsConfig);
       return new Response(
-        JSON.stringify({ packs, prices, chains: chainsConfig, wallets, isTestnet }),
+        JSON.stringify({ packs, prices, chains: chainsConfig, wallets, erc20Contracts, isTestnet }),
         { status: 200, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
       );
     }
@@ -360,7 +361,6 @@ export default {
 
       const txId = await createTransactionDoc(projectId, accessToken, {
         userId: security.user!.uid,
-        userEmail: security.user?.email,
         packId: pack.id,
         credits: pack.credits,
         usdPrice: pack.usdPrice,
@@ -370,7 +370,6 @@ export default {
         chainId: chainConfig.chainId,
         toAddress,
         txHash: body.txHash,
-        isTestnet,
       });
 
       activateTransactionTracking();

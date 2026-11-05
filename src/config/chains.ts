@@ -42,7 +42,7 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://bsc-dataseed.binance.org",
       "https://bsc-dataseed1.defibit.io",
       "https://bsc-dataseed1.ninicoin.io",
-      "https://rpc.ankr.com/bsc",
+
       "https://1rpc.io/bnb",
     ],
     nativeToken: "BNB",
@@ -59,7 +59,7 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://eth.llamarpc.com",
       "https://cloudflare-eth.com",
       "https://ethereum.publicnode.com",
-      "https://rpc.ankr.com/eth",
+
       "https://1rpc.io/eth",
       "https://mainnet.gateway.tenderly.co",
     ],
@@ -86,7 +86,7 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
     rpcUrls: [
       "https://polygon.llamarpc.com",
       "https://polygon-rpc.com",
-      "https://rpc.ankr.com/polygon",
+
       "https://1rpc.io/matic",
       "https://polygon.drpc.org",
     ],
@@ -104,7 +104,7 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://mainnet.base.org",
       "https://base.llamarpc.com",
       "https://base.meowrpc.com",
-      "https://rpc.ankr.com/base",
+
       "https://1rpc.io/base",
     ],
     nativeToken: "ETH",
@@ -121,7 +121,7 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://arb1.arbitrum.io/rpc",
       "https://arbitrum.llamarpc.com",
       "https://arbitrum-one.publicnode.com",
-      "https://rpc.ankr.com/arbitrum",
+
       "https://1rpc.io/arb",
     ],
     nativeToken: "ETH",
@@ -138,7 +138,7 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://mainnet.optimism.io",
       "https://optimism.llamarpc.com",
       "https://optimism-rpc.publicnode.com",
-      "https://rpc.ankr.com/optimism",
+
       "https://1rpc.io/op",
     ],
     nativeToken: "ETH",
@@ -155,7 +155,7 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://api.avax.network/ext/bc/C/rpc",
       "https://avalanche.drpc.org",
       "https://1rpc.io/avax/c",
-      "https://rpc.ankr.com/avalanche-c",
+
     ],
     nativeToken: "AVAX",
     nativeDecimals: 18,
@@ -200,7 +200,7 @@ const TESTNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://ethereum-sepolia.publicnode.com",
       "https://1rpc.io/sepolia",
       "https://gateway.tenderly.co/public/sepolia",
-      "https://rpc.ankr.com/eth_sepolia",
+
     ],
     nativeToken: "ETH",
     nativeDecimals: 18,
@@ -314,84 +314,50 @@ export function getChainsConfig(
   return testNetMode ? TESTNET_CHAINS_CONFIG : MAINNET_CHAINS_CONFIG;
 }
 
+/**
+ * Filter ERC20 contracts to only include entries for chains in the given config.
+ * Returns a map keyed by chainId, containing only contracts for active chains.
+ */
+export function getERC20ContractsForChains(
+  chainsConfig: Record<SupportedChainKey, ChainConfig>,
+): Record<number, Partial<Record<SupportedToken, TokenContract>>> {
+  const result: Record<number, Partial<Record<SupportedToken, TokenContract>>> = {};
+  for (const chain of Object.values(chainsConfig)) {
+    if (chain.chainId != null && ERC20_CONTRACTS[chain.chainId]) {
+      result[chain.chainId] = ERC20_CONTRACTS[chain.chainId];
+    }
+  }
+  return result;
+}
+
 // Export mainnet as default for backward compatibility
 export const CHAINS_CONFIG = MAINNET_CHAINS_CONFIG;
 
 /**
- * RPC URLs mapped by specific chainId (supports both mainnets and testnets)
+ * Unified chain config lookup by chainId (covers both mainnets and testnets).
+ * This is the single source of truth for resolving chain metadata from chainId alone.
  */
-export const CHAIN_ID_RPC_URLS: Record<number, string[]> = {
-  // Mainnets
-  1: [
-    "https://eth.llamarpc.com",
-    "https://cloudflare-eth.com",
-    "https://ethereum.publicnode.com",
-    "https://rpc.ankr.com/eth",
-  ],
-  56: [
-    "https://binance.llamarpc.com",
-    "https://bsc-dataseed.binance.org",
-    "https://rpc.ankr.com/bsc",
-  ],
-  137: [
-    "https://polygon.llamarpc.com",
-    "https://polygon-rpc.com",
-    "https://rpc.ankr.com/polygon",
-  ],
-  8453: [
-    "https://mainnet.base.org",
-    "https://base.llamarpc.com",
-    "https://rpc.ankr.com/base",
-  ],
-  42161: [
-    "https://arb1.arbitrum.io/rpc",
-    "https://arbitrum.llamarpc.com",
-    "https://rpc.ankr.com/arbitrum",
-  ],
-  10: [
-    "https://mainnet.optimism.io",
-    "https://optimism.llamarpc.com",
-    "https://rpc.ankr.com/optimism",
-  ],
-  43114: [
-    "https://api.avax.network/ext/bc/C/rpc",
-    "https://avalanche.drpc.org",
-    "https://rpc.ankr.com/avalanche-c",
-  ],
-  9745: ["https://rpc.plasma.to", "https://rpc.plasmachain.net"],
+export const CHAIN_ID_CONFIG: Record<number, ChainConfig> = {};
 
-  // Testnets
-  11155111: [
-    "https://ethereum-sepolia.publicnode.com",
-    "https://1rpc.io/sepolia",
-    "https://gateway.tenderly.co/public/sepolia",
-  ],
-  97: [
-    "https://data-seed-prebsc-1-s1.binance.org:8545",
-    "https://bsc-testnet.publicnode.com",
-  ],
-  80002: [
-    "https://polygon-amoy.drpc.org",
-    "https://polygon-amoy-bor-rpc.publicnode.com",
-  ],
-  84532: [
-    "https://sepolia.base.org",
-    "https://base-sepolia-rpc.publicnode.com",
-  ],
-  421614: [
-    "https://sepolia-rollup.arbitrum.io/rpc",
-    "https://arbitrum-sepolia.drpc.org",
-  ],
-  11155420: [
-    "https://sepolia.optimism.io",
-    "https://optimism-sepolia.drpc.org",
-  ],
-  43113: [
-    "https://api.avax-test.network/ext/bc/C/rpc",
-    "https://avalanche-fuji-c-chain-rpc.publicnode.com",
-  ],
-  9746: ["https://testnet-rpc.plasma.to"],
-};
+for (const chain of Object.values(MAINNET_CHAINS_CONFIG)) {
+  if (chain.chainId != null) {
+    CHAIN_ID_CONFIG[chain.chainId] = chain;
+  }
+}
+for (const chain of Object.values(TESTNET_CHAINS_CONFIG)) {
+  if (chain.chainId != null) {
+    CHAIN_ID_CONFIG[chain.chainId] = chain;
+  }
+}
+
+/**
+ * RPC URLs mapped by specific chainId (supports both mainnets and testnets).
+ * Derived from CHAIN_ID_CONFIG for backward compatibility.
+ */
+export const CHAIN_ID_RPC_URLS: Record<number, string[]> = {};
+for (const [id, chain] of Object.entries(CHAIN_ID_CONFIG)) {
+  CHAIN_ID_RPC_URLS[Number(id)] = chain.rpcUrls;
+}
 
 export const DEFAULT_TESTNET_CHAIN_IDS: Record<SupportedChainKey, number> = {
   bsc: 97,

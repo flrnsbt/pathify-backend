@@ -1,8 +1,7 @@
 import {
+  CHAIN_ID_CONFIG,
   CHAIN_ID_RPC_URLS,
-  DEFAULT_TESTNET_CHAIN_IDS,
   ERC20_CONTRACTS,
-  getChainsConfig,
   SupportedChainKey,
   SupportedToken,
 } from "../config/chains";
@@ -21,19 +20,25 @@ export interface VerificationResult {
  * Standard JSON-RPC caller with multiple fallback endpoints
  */
 async function callEvmRpc(
-  isTestnet: boolean,
   chainKey: SupportedChainKey,
   method: string,
   params: any[],
   chainId?: number,
 ): Promise<any> {
-  const chainsConfig = getChainsConfig(isTestnet);
-  const chain = chainsConfig[chainKey];
-  if (!chain || !chain.isEvm) {
-    throw new Error(`Chain ${chainKey} is not an EVM chain`);
+  // Prefer chainId-based lookup, fall back to chainKey-based lookup
+  let rpcUrls: string[] | undefined;
+  if (chainId != null) {
+    const chainConfig = CHAIN_ID_CONFIG[chainId];
+    if (chainConfig && chainConfig.isEvm) {
+      rpcUrls = chainConfig.rpcUrls;
+    }
   }
-
-  const rpcUrls = (chainId && CHAIN_ID_RPC_URLS[chainId]) || chain.rpcUrls;
+  if (!rpcUrls) {
+    rpcUrls = CHAIN_ID_RPC_URLS[chainId ?? -1];
+  }
+  if (!rpcUrls) {
+    throw new Error(`No RPC endpoints found for chain ${chainKey}${chainId != null ? ` (chainId ${chainId})` : ''}`);
+  }
   let lastError: Error | null = null;
   for (const rpcUrl of rpcUrls) {
     try {
@@ -97,7 +102,6 @@ function parseTokenUnits(amountStr: string, decimals: number): bigint {
  * Verifies an EVM transaction receipt and transfer contents
  */
 async function verifyEvmTransaction(
-  isTestnet: boolean,
   chainKey: SupportedChainKey,
   txHash: string,
   expectedRecipient: string,
@@ -116,33 +120,22 @@ async function verifyEvmTransaction(
       };
     }
 
-    const chainsConfig = getChainsConfig(isTestnet);
-    const chain = chainsConfig[chainKey];
-    let effectiveChainId = chainId;
+    // Resolve chain config from chainId (single source of truth)
+    const chain = chainId != null ? CHAIN_ID_CONFIG[chainId] : undefined;
+    if (!chain) {
+      return {
+        isConfirmed: false,
+        isFailed: true,
+        statusMessage: `Unknown chainId: ${chainId}`,
+      };
+    }
+
     let receipt = await callEvmRpc(
-      isTestnet,
       chainKey,
       "eth_getTransactionReceipt",
       [txHash],
-      effectiveChainId,
+      chainId,
     );
-
-    // If receipt not found and chainId was not specified, try testnet RPC as fallback
-    if (!receipt && !chainId && DEFAULT_TESTNET_CHAIN_IDS[chainKey]) {
-      try {
-        const testnetReceipt = await callEvmRpc(
-          isTestnet,
-          chainKey,
-          "eth_getTransactionReceipt",
-          [txHash],
-          DEFAULT_TESTNET_CHAIN_IDS[chainKey],
-        );
-        if (testnetReceipt) {
-          receipt = testnetReceipt;
-          effectiveChainId = DEFAULT_TESTNET_CHAIN_IDS[chainKey];
-        }
-      } catch {}
-    }
 
     // Transaction not yet mined
     if (!receipt) {
@@ -167,11 +160,10 @@ async function verifyEvmTransaction(
     if (isNative) {
       // Verify Native transfer (ETH, BNB, POL, AVAX, XPL)
       const tx = await callEvmRpc(
-        isTestnet,
         chainKey,
         "eth_getTransactionByHash",
         [txHash],
-        effectiveChainId,
+        chainId,
       );
       if (!tx) {
         return {
@@ -215,7 +207,7 @@ async function verifyEvmTransaction(
       };
     } else {
       // Verify ERC-20 token transfer (USDT, USDC)
-      const effectiveId = effectiveChainId || chain.chainId || 1;
+      const effectiveId = chainId || chain.chainId || 1;
       const contractConfig = ERC20_CONTRACTS[effectiveId]?.[token];
 
       // SECURITY FIX: Reject unconfigured token contracts to prevent log spoofing attacks
@@ -300,7 +292,6 @@ async function verifyBtcTransaction(
   expectedRecipient: string,
   expectedAmount: string,
   createdAtMs: number,
-  isTestnet: boolean,
 ): Promise<VerificationResult> {
   // SECURITY: Validate that recipient is a configured wallet address
   if (!isValidWalletAddress(expectedRecipient)) {
@@ -445,15 +436,12 @@ async function verifyBtcTransaction(
 export async function verifyCryptoTransaction(
   tx: CryptoTransactionDoc,
 ): Promise<VerificationResult> {
-  const isTestnet = tx.isTestnet ?? false;
-
   if (tx.chainKey === "btc") {
     return await verifyBtcTransaction(
       tx.txHash,
       tx.toAddress,
       tx.cryptoAmount,
       tx.createdAt,
-      isTestnet,
     );
   }
 
@@ -466,7 +454,6 @@ export async function verifyCryptoTransaction(
   }
 
   return await verifyEvmTransaction(
-    isTestnet,
     tx.chainKey,
     tx.txHash,
     tx.toAddress,

@@ -3,7 +3,6 @@ import { SupportedChainKey, SupportedToken } from '../config/chains';
 export interface CryptoTransactionDoc {
   id: string;
   userId: string;
-  userEmail?: string;
   packId: string;
   credits: number;
   usdPrice: number;
@@ -18,7 +17,6 @@ export interface CryptoTransactionDoc {
   createdAt: number;
   updatedAt: number;
   confirmedAt?: number;
-  isTestnet?: boolean;
 }
 
 let cachedAccessToken: string | null = null;
@@ -261,7 +259,6 @@ export async function getPendingTransactions(
       result.push({
         id: docId,
         userId: parsed.userId || '',
-        userEmail: parsed.userEmail,
         packId: parsed.packId || '',
         credits: parsed.credits || 0,
         usdPrice: parsed.usdPrice || 0,
@@ -449,7 +446,6 @@ export async function createSupportTicketDoc(
 
 export interface CreateTransactionInput {
   userId: string;
-  userEmail?: string;
   packId: string;
   credits: number;
   usdPrice: number;
@@ -459,7 +455,6 @@ export interface CreateTransactionInput {
   chainId?: number;
   toAddress: string;
   txHash: string;
-  isTestnet?: boolean;
 }
 
 /**
