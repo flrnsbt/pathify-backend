@@ -40,6 +40,12 @@ function base64UrlEncode(data: Uint8Array | string): string {
  * Converts a PEM formatted private key to a WebCrypto CryptoKey
  */
 async function importPrivateKey(pem: string): Promise<CryptoKey> {
+  // Detect key type from PEM header before stripping it
+  // Google service account keys are typically PKCS#1 ("BEGIN RSA PRIVATE KEY")
+  // PKCS#8 uses "BEGIN PRIVATE KEY"
+  const hasRsaHeader = pem.includes('BEGIN RSA PRIVATE KEY');
+  const importFormat: 'pkcs8' | 'rsa-pkcs1' = hasRsaHeader ? 'rsa-pkcs1' : 'pkcs8';
+
   // Clean up PEM wrapper and whitespace
   // Handle both literal \n strings (from Cloudflare secrets) and actual newlines
   let cleanPem = pem
@@ -62,7 +68,7 @@ async function importPrivateKey(pem: string): Promise<CryptoKey> {
   }
 
   return await crypto.subtle.importKey(
-    'pkcs8',
+    importFormat,
     binaryDer.buffer,
     {
       name: 'RSASSA-PKCS1-v1_5',
