@@ -545,7 +545,7 @@ export async function atomicUnlockImage(
           update: {
             name: userDocPath,
             fields: {
-              [`unlockedImages.${imageHash}`]: {
+              [`unlockedImages.\`${imageHash}\``]: {
                 mapValue: {
                   fields: {
                     imageHash: { stringValue: imageHash },
@@ -558,7 +558,7 @@ export async function atomicUnlockImage(
             },
           },
           updateMask: {
-            fieldPaths: [`unlockedImages.${imageHash}`],
+            fieldPaths: [`unlockedImages.\`${imageHash}\``],
           },
         },
       ],
@@ -580,15 +580,15 @@ export async function atomicUnlockImage(
         return true;
       }
 
-      if (res.status === 400) {
-        const errText = await res.text().catch(() => '');
-        if (errText.includes('FAILED_PRECONDITION')) {
-          console.warn(`[atomicUnlockImage] Precondition failed, attempt ${attempt + 1}/${maxAttempts}`);
-          continue;
-        }
+      const errText = await res.text().catch(() => '');
+      if (res.status === 400 && errText.includes('FAILED_PRECONDITION')) {
+        console.warn(`[atomicUnlockImage] Precondition failed, attempt ${attempt + 1}/${maxAttempts}`);
+        continue;
       }
 
-      console.error(`[atomicUnlockImage] Commit failed: ${res.status}`, await res.text().catch(() => ''));
+      console.error(
+        `[atomicUnlockImage] Commit failed: ${res.status} body=${errText} request=${JSON.stringify(commitBody)}`
+      );
       return false;
     } catch (err) {
       console.error(`[atomicUnlockImage] Error:`, err);
@@ -622,7 +622,7 @@ export async function atomicConsumeGeneration(
             document: userDocPath,
             fieldTransforms: [
               {
-                fieldPath: `unlockedImages.${imageHash}.generationsUsed`,
+                fieldPath: `unlockedImages.\`${imageHash}\`.generationsUsed`,
                 increment: {
                   integerValue: '1',
                 },
@@ -653,15 +653,15 @@ export async function atomicConsumeGeneration(
         return true;
       }
 
-      if (res.status === 400) {
-        const errText = await res.text().catch(() => '');
-        if (errText.includes('FAILED_PRECONDITION')) {
-          console.warn(`[atomicConsumeGeneration] Precondition failed, attempt ${attempt + 1}/${maxAttempts}`);
-          continue;
-        }
+      const errText = await res.text().catch(() => '');
+      if (res.status === 400 && errText.includes('FAILED_PRECONDITION')) {
+        console.warn(`[atomicConsumeGeneration] Precondition failed, attempt ${attempt + 1}/${maxAttempts}`);
+        continue;
       }
 
-      console.error(`[atomicConsumeGeneration] Commit failed: ${res.status}`, await res.text().catch(() => ''));
+      console.error(
+        `[atomicConsumeGeneration] Commit failed: ${res.status} body=${errText} request=${JSON.stringify(commitBody)}`
+      );
       return false;
     } catch (err) {
       console.error(`[atomicConsumeGeneration] Error:`, err);
@@ -758,7 +758,8 @@ export async function confirmAndCreditAtomically(
       return true;
     }
 
-    console.error(`[confirmAndCreditAtomically] Commit failed: ${res.status}`, await res.text().catch(() => ''));
+    const errText = await res.text().catch(() => '');
+    console.error(`[confirmAndCreditAtomically] Commit failed: ${res.status} body=${errText} request=${JSON.stringify(commitBody)}`);
     return false;
   } catch (err) {
     console.error(`[confirmAndCreditAtomically] Error:`, err);
@@ -770,6 +771,7 @@ export interface CreateHistoryInput {
   userId: string;
   imageHash: string;
   svg: string;
+  [key: string]: any;
 }
 
 /**

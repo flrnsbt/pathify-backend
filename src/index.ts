@@ -437,7 +437,7 @@ export default {
       const security = await verifyWorkerSecurity(request, env, { requireAuth: true });
       if (!security.isValid) return security.errorResponse!;
 
-      let body: { imageHash: string; svg: string } = {} as any;
+      let body: Record<string, any> = {};
       try {
         body = await request.json();
       } catch {
@@ -455,10 +455,10 @@ export default {
       const projectId = env.FIREBASE_PROJECT_ID as string;
       const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
 
+      const { userId: _ignored, createdAt: _ignoredCreatedAt, ...rest } = body;
       const historyId = await createHistoryDoc(projectId, accessToken, {
         userId: security.user!.uid,
-        imageHash: body.imageHash,
-        svg: body.svg,
+        ...rest,
       });
 
       return new Response(
