@@ -95,6 +95,7 @@ export async function processPendingTransactions(
 
   for (const tx of pending) {
     try {
+      console.log(`[PROCESSING] Tx ${tx.id} for user ${tx.userId} on chain ${tx.chainKey} (${tx.cryptoToken})`);
       const verification = await verifyCryptoTransaction(tx);
 
       if (verification.isConfirmed) {

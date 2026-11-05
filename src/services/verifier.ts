@@ -22,7 +22,6 @@ export interface VerificationResult {
  */
 async function callEvmRpc(
   isTestnet: boolean,
-
   chainKey: SupportedChainKey,
   method: string,
   params: any[],
@@ -73,13 +72,25 @@ function addressToTopic(address: string): string {
 }
 
 /**
- * Parses token amount with decimal places into BigInt
+ * Safely parses token amount with decimal places into BigInt without floating point errors or zero-stripping bugs
  */
 function parseTokenUnits(amountStr: string, decimals: number): bigint {
-  const [whole, fraction = ""] = amountStr.trim().split(".");
-  const paddedFraction = fraction.padEnd(decimals, "0").slice(0, decimals);
-  const combined = `${whole}${paddedFraction}`.replace(/^0+/, "") || "0";
-  return BigInt(combined);
+  const trimmed = amountStr.trim();
+  if (!trimmed || isNaN(Number(trimmed))) {
+    throw new Error(`Invalid amount string: "${amountStr}"`);
+  }
+
+  const parts = trimmed.split(".");
+  const wholePart = parts[0] || "0";
+  let fractionPart = parts[1] || "";
+
+  if (fractionPart.length > decimals) {
+    fractionPart = fractionPart.slice(0, decimals);
+  } else {
+    fractionPart = fractionPart.padEnd(decimals, "0");
+  }
+
+  return BigInt(wholePart) * BigInt(10) ** BigInt(decimals) + BigInt(fractionPart);
 }
 
 /**
@@ -110,7 +121,6 @@ async function verifyEvmTransaction(
     let effectiveChainId = chainId;
     let receipt = await callEvmRpc(
       isTestnet,
-
       chainKey,
       "eth_getTransactionReceipt",
       [txHash],
@@ -122,7 +132,6 @@ async function verifyEvmTransaction(
       try {
         const testnetReceipt = await callEvmRpc(
           isTestnet,
-
           chainKey,
           "eth_getTransactionReceipt",
           [txHash],
@@ -159,7 +168,6 @@ async function verifyEvmTransaction(
       // Verify Native transfer (ETH, BNB, POL, AVAX, XPL)
       const tx = await callEvmRpc(
         isTestnet,
-
         chainKey,
         "eth_getTransactionByHash",
         [txHash],
@@ -185,7 +193,7 @@ async function verifyEvmTransaction(
         };
       }
 
-      const expectedWei = parseTokenUnits(expectedAmount, 18);
+      const expectedWei = parseTokenUnits(expectedAmount, chain.nativeDecimals || 18);
       const actualWei = BigInt(tx.value || "0x0");
 
       // Allow 1% tolerance for gas estimation or rounding differences
@@ -209,8 +217,18 @@ async function verifyEvmTransaction(
       // Verify ERC-20 token transfer (USDT, USDC)
       const effectiveId = effectiveChainId || chain.chainId || 1;
       const contractConfig = ERC20_CONTRACTS[effectiveId]?.[token];
+
+      // SECURITY FIX: Reject unconfigured token contracts to prevent log spoofing attacks
+      if (!contractConfig?.address) {
+        return {
+          isConfirmed: false,
+          isFailed: true,
+          statusMessage: `ERC-20 token ${token} address configuration missing for chain ID ${effectiveId}.`,
+        };
+      }
+
       const decimals =
-        contractConfig?.decimals ||
+        contractConfig.decimals ||
         (token === "USDT" || token === "USDC" ? 6 : 18);
       const expectedPaddedRecipient = addressToTopic(expectedRecipient);
       const transferTopic =
@@ -223,10 +241,9 @@ async function verifyEvmTransaction(
         if (!log.topics || log.topics.length < 3) continue;
         if (log.topics[0].toLowerCase() !== transferTopic) continue;
 
-        // Verify contract address matches configured token contract if known
+        // SECURITY FIX: Strict contract address matching required
         if (
-          contractConfig?.address &&
-          log.address &&
+          !log.address ||
           log.address.toLowerCase() !== contractConfig.address.toLowerCase()
         ) {
           continue;

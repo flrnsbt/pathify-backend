@@ -26,6 +26,7 @@ export interface ChainConfig {
   isEvm: boolean;
   rpcUrls: string[];
   nativeToken: SupportedToken;
+  nativeDecimals: number;
   tokens: SupportedToken[];
   explorerUrl: string;
 }
@@ -41,8 +42,11 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://bsc-dataseed.binance.org",
       "https://bsc-dataseed1.defibit.io",
       "https://bsc-dataseed1.ninicoin.io",
+      "https://rpc.ankr.com/bsc",
+      "https://1rpc.io/bnb",
     ],
     nativeToken: "BNB",
+    nativeDecimals: 18,
     tokens: ["USDT", "USDC", "BNB"],
     explorerUrl: "https://bscscan.com",
   },
@@ -56,8 +60,11 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://cloudflare-eth.com",
       "https://ethereum.publicnode.com",
       "https://rpc.ankr.com/eth",
+      "https://1rpc.io/eth",
+      "https://mainnet.gateway.tenderly.co",
     ],
     nativeToken: "ETH",
+    nativeDecimals: 18,
     tokens: ["ETH", "USDT", "USDC"],
     explorerUrl: "https://etherscan.io",
   },
@@ -65,8 +72,9 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
     key: "btc",
     name: "Bitcoin Network",
     isEvm: false,
-    rpcUrls: ["https://mempool.space/api"],
+    rpcUrls: ["https://mempool.space/api", "https://blockstream.info/api"],
     nativeToken: "BTC",
+    nativeDecimals: 8,
     tokens: ["BTC"],
     explorerUrl: "https://mempool.space",
   },
@@ -79,8 +87,11 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://polygon.llamarpc.com",
       "https://polygon-rpc.com",
       "https://rpc.ankr.com/polygon",
+      "https://1rpc.io/matic",
+      "https://polygon.drpc.org",
     ],
     nativeToken: "POL",
+    nativeDecimals: 18,
     tokens: ["USDT", "USDC", "POL"],
     explorerUrl: "https://polygonscan.com",
   },
@@ -93,8 +104,11 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://mainnet.base.org",
       "https://base.llamarpc.com",
       "https://base.meowrpc.com",
+      "https://rpc.ankr.com/base",
+      "https://1rpc.io/base",
     ],
     nativeToken: "ETH",
+    nativeDecimals: 18,
     tokens: ["ETH", "USDC"],
     explorerUrl: "https://basescan.org",
   },
@@ -107,8 +121,11 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://arb1.arbitrum.io/rpc",
       "https://arbitrum.llamarpc.com",
       "https://arbitrum-one.publicnode.com",
+      "https://rpc.ankr.com/arbitrum",
+      "https://1rpc.io/arb",
     ],
     nativeToken: "ETH",
+    nativeDecimals: 18,
     tokens: ["ETH", "USDT", "USDC"],
     explorerUrl: "https://arbiscan.io",
   },
@@ -121,8 +138,11 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://mainnet.optimism.io",
       "https://optimism.llamarpc.com",
       "https://optimism-rpc.publicnode.com",
+      "https://rpc.ankr.com/optimism",
+      "https://1rpc.io/op",
     ],
     nativeToken: "ETH",
+    nativeDecimals: 18,
     tokens: ["ETH", "USDT", "USDC"],
     explorerUrl: "https://optimistic.etherscan.io",
   },
@@ -135,8 +155,10 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://api.avax.network/ext/bc/C/rpc",
       "https://avalanche.drpc.org",
       "https://1rpc.io/avax/c",
+      "https://rpc.ankr.com/avalanche-c",
     ],
     nativeToken: "AVAX",
+    nativeDecimals: 18,
     tokens: ["AVAX", "USDT", "USDC"],
     explorerUrl: "https://snowtrace.io",
   },
@@ -147,6 +169,7 @@ const MAINNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
     isEvm: true,
     rpcUrls: ["https://rpc.plasma.to", "https://rpc.plasmachain.net"],
     nativeToken: "XPL",
+    nativeDecimals: 18,
     tokens: ["XPL", "USDC"],
     explorerUrl: "https://plasmascan.to",
   },
@@ -161,8 +184,10 @@ const TESTNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
     rpcUrls: [
       "https://data-seed-prebsc-1-s1.binance.org:8545",
       "https://bsc-testnet.publicnode.com",
+      "https://data-seed-prebsc-2-s1.binance.org:8545",
     ],
     nativeToken: "BNB",
+    nativeDecimals: 18,
     tokens: ["USDT", "USDC", "BNB"],
     explorerUrl: "https://testnet.bscscan.com",
   },
@@ -175,8 +200,10 @@ const TESTNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
       "https://ethereum-sepolia.publicnode.com",
       "https://1rpc.io/sepolia",
       "https://gateway.tenderly.co/public/sepolia",
+      "https://rpc.ankr.com/eth_sepolia",
     ],
     nativeToken: "ETH",
+    nativeDecimals: 18,
     tokens: ["ETH", "USDT", "USDC"],
     explorerUrl: "https://sepolia.etherscan.io",
   },
@@ -186,6 +213,7 @@ const TESTNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
     isEvm: false,
     rpcUrls: ["https://mempool.space/testnet/api"],
     nativeToken: "BTC",
+    nativeDecimals: 8,
     tokens: ["BTC"],
     explorerUrl: "https://mempool.space/testnet",
   },
@@ -197,8 +225,10 @@ const TESTNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
     rpcUrls: [
       "https://polygon-amoy.drpc.org",
       "https://polygon-amoy-bor-rpc.publicnode.com",
+      "https://rpc-amoy.polygon.technology",
     ],
     nativeToken: "POL",
+    nativeDecimals: 18,
     tokens: ["USDT", "USDC", "POL"],
     explorerUrl: "https://amoy.polygonscan.com",
   },
@@ -210,8 +240,10 @@ const TESTNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
     rpcUrls: [
       "https://sepolia.base.org",
       "https://base-sepolia-rpc.publicnode.com",
+      "https://base-sepolia.drpc.org",
     ],
     nativeToken: "ETH",
+    nativeDecimals: 18,
     tokens: ["ETH", "USDC"],
     explorerUrl: "https://sepolia.basescan.org",
   },
@@ -223,8 +255,10 @@ const TESTNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
     rpcUrls: [
       "https://sepolia-rollup.arbitrum.io/rpc",
       "https://arbitrum-sepolia.drpc.org",
+      "https://arbitrum-sepolia.publicnode.com",
     ],
     nativeToken: "ETH",
+    nativeDecimals: 18,
     tokens: ["ETH", "USDT", "USDC"],
     explorerUrl: "https://sepolia.arbiscan.io",
   },
@@ -236,8 +270,10 @@ const TESTNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
     rpcUrls: [
       "https://sepolia.optimism.io",
       "https://optimism-sepolia.drpc.org",
+      "https://optimism-sepolia.publicnode.com",
     ],
     nativeToken: "ETH",
+    nativeDecimals: 18,
     tokens: ["ETH", "USDC"],
     explorerUrl: "https://optimism-sepolia.blockscout.com",
   },
@@ -249,8 +285,10 @@ const TESTNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
     rpcUrls: [
       "https://api.avax-test.network/ext/bc/C/rpc",
       "https://avalanche-fuji-c-chain-rpc.publicnode.com",
+      "https://1rpc.io/avax/c",
     ],
     nativeToken: "AVAX",
+    nativeDecimals: 18,
     tokens: ["AVAX", "USDT", "USDC"],
     explorerUrl: "https://testnet.snowtrace.io",
   },
@@ -261,6 +299,7 @@ const TESTNET_CHAINS_CONFIG: Record<SupportedChainKey, ChainConfig> = {
     isEvm: true,
     rpcUrls: ["https://testnet-rpc.plasma.to"],
     nativeToken: "XPL",
+    nativeDecimals: 18,
     tokens: ["XPL", "USDC"],
     explorerUrl: "https://testnet.plasmascan.to",
   },
@@ -287,17 +326,39 @@ export const CHAIN_ID_RPC_URLS: Record<number, string[]> = {
     "https://eth.llamarpc.com",
     "https://cloudflare-eth.com",
     "https://ethereum.publicnode.com",
+    "https://rpc.ankr.com/eth",
   ],
-  56: ["https://binance.llamarpc.com", "https://bsc-dataseed.binance.org"],
-  137: ["https://polygon.llamarpc.com", "https://polygon-rpc.com"],
-  8453: ["https://mainnet.base.org", "https://base.llamarpc.com"],
-  42161: ["https://arb1.arbitrum.io/rpc", "https://arbitrum.llamarpc.com"],
-  10: ["https://mainnet.optimism.io", "https://optimism.llamarpc.com"],
+  56: [
+    "https://binance.llamarpc.com",
+    "https://bsc-dataseed.binance.org",
+    "https://rpc.ankr.com/bsc",
+  ],
+  137: [
+    "https://polygon.llamarpc.com",
+    "https://polygon-rpc.com",
+    "https://rpc.ankr.com/polygon",
+  ],
+  8453: [
+    "https://mainnet.base.org",
+    "https://base.llamarpc.com",
+    "https://rpc.ankr.com/base",
+  ],
+  42161: [
+    "https://arb1.arbitrum.io/rpc",
+    "https://arbitrum.llamarpc.com",
+    "https://rpc.ankr.com/arbitrum",
+  ],
+  10: [
+    "https://mainnet.optimism.io",
+    "https://optimism.llamarpc.com",
+    "https://rpc.ankr.com/optimism",
+  ],
   43114: [
     "https://api.avax.network/ext/bc/C/rpc",
     "https://avalanche.drpc.org",
+    "https://rpc.ankr.com/avalanche-c",
   ],
-  9745: ["https://rpc.plasma.to"],
+  9745: ["https://rpc.plasma.to", "https://rpc.plasmachain.net"],
 
   // Testnets
   11155111: [
@@ -353,7 +414,6 @@ export const ERC20_CONTRACTS: Record<
   number,
   Partial<Record<SupportedToken, TokenContract>>
 > = {
-  // Ethereum Mainnet (1)
   1: {
     USDT: {
       address: "0xdac17f958d2ee523a2206206994597c13d831ec7",
@@ -364,7 +424,6 @@ export const ERC20_CONTRACTS: Record<
       decimals: 6,
     },
   },
-  // BNB Smart Chain (56)
   56: {
     USDT: {
       address: "0x55d398326f99059ff775485246999027b3197955",
@@ -375,7 +434,6 @@ export const ERC20_CONTRACTS: Record<
       decimals: 18,
     },
   },
-  // Polygon PoS (137)
   137: {
     USDT: {
       address: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
@@ -386,14 +444,12 @@ export const ERC20_CONTRACTS: Record<
       decimals: 6,
     },
   },
-  // Base (8453)
   8453: {
     USDC: {
       address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
       decimals: 6,
     },
   },
-  // Arbitrum One (42161)
   42161: {
     USDT: {
       address: "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
@@ -404,7 +460,6 @@ export const ERC20_CONTRACTS: Record<
       decimals: 6,
     },
   },
-  // Optimism (10)
   10: {
     USDT: {
       address: "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58",
@@ -415,7 +470,6 @@ export const ERC20_CONTRACTS: Record<
       decimals: 6,
     },
   },
-  // Avalanche C-Chain (43114)
   43114: {
     USDT: {
       address: "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7",
@@ -426,17 +480,13 @@ export const ERC20_CONTRACTS: Record<
       decimals: 6,
     },
   },
-  // Plasma (9745)
   9745: {
     USDC: {
       address: "0x2d661c89d812261039af9764eceaaee884f5f67f",
       decimals: 6,
     },
   },
-
-  // Testnets
   11155111: {
-    // Sepolia
     USDT: {
       address: "0xab868415803cf3bdd382197159001bc0c0f3b6c2",
       decimals: 18,
@@ -447,7 +497,6 @@ export const ERC20_CONTRACTS: Record<
     },
   },
   97: {
-    // BSC Testnet
     USDT: {
       address: "0x337610d27c682e347c9cd60bd4b3b107c9632205",
       decimals: 18,
@@ -458,7 +507,6 @@ export const ERC20_CONTRACTS: Record<
     },
   },
   80002: {
-    // Polygon Amoy
     USDT: {
       address: "0x056fd409e1d491d221329e89416b166c23615001",
       decimals: 6,
@@ -469,14 +517,12 @@ export const ERC20_CONTRACTS: Record<
     },
   },
   84532: {
-    // Base Sepolia
     USDC: {
       address: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
       decimals: 6,
     },
   },
   421614: {
-    // Arbitrum Sepolia
     USDT: {
       address: "0x250e7d8c26740fc616921369a0738f7a2ce69f85",
       decimals: 6,
@@ -487,14 +533,12 @@ export const ERC20_CONTRACTS: Record<
     },
   },
   11155420: {
-    // OP Sepolia
     USDC: {
       address: "0x5fd84259d66cd46123540766be93dfe6d43133df",
       decimals: 6,
     },
   },
   43113: {
-    // Avalanche Fuji
     USDT: {
       address: "0x056fd409e1d491d221329e89416b166c23615001",
       decimals: 6,
