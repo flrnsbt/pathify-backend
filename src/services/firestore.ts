@@ -1,5 +1,5 @@
 import { SupportedChainKey, SupportedToken } from '../config/chains';
-import { GENERATIONS_PER_UNLOCK } from '../config/limits';
+import { GENERATIONS_PER_UNLOCK, WELCOME_CREDITS_AMOUNT, WELCOME_GRANT_CUTOFF_MS, WELCOME_GRANT_MAX_PER_FINGERPRINT } from '../config/limits';
 
 export interface CryptoTransactionDoc {
   id: string;
@@ -742,6 +742,217 @@ export async function atomicConsumeGeneration(
 
   console.error(`[atomicConsumeGeneration] Failed after ${maxAttempts} attempts`);
   return 'error';
+}
+
+export type WelcomeGrantResult =
+  | 'granted'
+  | 'already_granted'
+  | 'ineligible'
+  | 'no_fingerprint'
+  | 'blacklisted'
+  | 'fingerprint_limit'
+  | 'error';
+
+const MARKER_SUBCOLLECTION = 'onboarding';
+const WELCOME_MARKER_DOC = 'welcomeCredits';
+const BLACKLIST_COLLECTION = 'welcome_credit_blacklist';
+const FINGERPRINT_CLAIMS_COLLECTION = 'fingerprint_claims';
+
+function isValidFingerprintId(id: string): boolean {
+  return /^[a-zA-Z0-9_-]{8,128}$/.test(id);
+}
+
+async function getDocJson(
+  url: string,
+  headers: Record<string, string>
+): Promise<{ status: number; doc?: any }> {
+  const res = await fetch(url, { headers });
+  if (!res.ok) return { status: res.status };
+  return { status: res.status, doc: await res.json().catch(() => undefined) };
+}
+
+/**
+ * Grants the one-time welcome credit bonus to a newly created account.
+ *
+ * Eligibility gates (any failure denies the grant, never partial):
+ *  1. Account age — user doc `createTime` must be at/after
+ *     WELCOME_GRANT_CUTOFF_MS (or the doc must not exist yet), so existing
+ *     accounts get nothing retroactively.
+ *  2. One-time marker — `users/{uid}/onboarding/welcomeCredits` must not exist.
+ *  3. Fingerprint required — client must supply a FingerprintJS visitorId.
+ *  4. Manual blacklist — `welcome_credit_blacklist/{fingerprintId}` must not exist.
+ *  5. Fingerprint cap — `fingerprint_claims/{fingerprintId}.userCount` must be
+ *     below WELCOME_GRANT_MAX_PER_FINGERPRINT.
+ *
+ * The grant itself is a single atomic commit: it claims the fingerprint slot
+ * (absolute userCount write guarded by an updateTime/exists precondition),
+ * creates the user marker (exists=false), and increments `credits`. Any
+ * precondition failure retries with fresh state, so concurrent claims cannot
+ * exceed the cap or double-grant.
+ */
+export async function grantWelcomeCredits(
+  projectId: string,
+  accessToken: string | null,
+  userId: string,
+  fingerprintId?: string
+): Promise<WelcomeGrantResult> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
+
+  const dbBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
+  const userDocPath = `projects/${projectId}/databases/(default)/documents/users/${userId}`;
+  const markerDocPath = `${userDocPath}/${MARKER_SUBCOLLECTION}/${WELCOME_MARKER_DOC}`;
+  const fp = typeof fingerprintId === 'string' ? fingerprintId.trim() : '';
+
+  try {
+    // 1. Account-age gate
+    const userRes = await getDocJson(`${dbBase}/users/${userId}`, headers);
+    if (userRes.status === 200 && userRes.doc) {
+      const createTimeMs = userRes.doc.createTime ? Date.parse(userRes.doc.createTime) : NaN;
+      if (Number.isFinite(createTimeMs) && createTimeMs < WELCOME_GRANT_CUTOFF_MS) {
+        return 'ineligible';
+      }
+    } else if (userRes.status !== 404) {
+      console.error(`[grantWelcomeCredits] Failed to fetch user doc: ${userRes.status}`);
+      return 'error';
+    }
+    // 404 = doc doesn't exist yet → brand-new account.
+
+    // 2. One-time marker gate
+    const markerRes = await getDocJson(`${dbBase}/users/${userId}/${MARKER_SUBCOLLECTION}/${WELCOME_MARKER_DOC}`, headers);
+    if (markerRes.status === 200 && markerRes.doc) {
+      return 'already_granted';
+    }
+    if (markerRes.status !== 200 && markerRes.status !== 404) {
+      console.error(`[grantWelcomeCredits] Failed to fetch marker doc: ${markerRes.status}`);
+      return 'error';
+    }
+
+    // 3. Fingerprint required
+    if (!isValidFingerprintId(fp)) {
+      return 'no_fingerprint';
+    }
+
+    // 4. Manual blacklist gate
+    const blacklistRes = await getDocJson(
+      `${dbBase}/${BLACKLIST_COLLECTION}/${encodeURIComponent(fp)}`,
+      headers
+    );
+    if (blacklistRes.status === 200 && blacklistRes.doc) {
+      return 'blacklisted';
+    }
+    if (blacklistRes.status !== 200 && blacklistRes.status !== 404) {
+      console.error(`[grantWelcomeCredits] Failed to fetch blacklist doc: ${blacklistRes.status}`);
+      return 'error';
+    }
+
+    // 5. Fingerprint cap + atomic grant, with optimistic retries
+    const claimsDocPath = `projects/${projectId}/databases/(default)/documents/${FINGERPRINT_CLAIMS_COLLECTION}/${fp}`;
+    const claimsUrl = `${dbBase}/${FINGERPRINT_CLAIMS_COLLECTION}/${encodeURIComponent(fp)}`;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const claimsRes = await getDocJson(claimsUrl, headers);
+      if (claimsRes.status !== 200 && claimsRes.status !== 404) {
+        console.error(`[grantWelcomeCredits] Failed to fetch fingerprint claims: ${claimsRes.status}`);
+        return 'error';
+      }
+
+      const currentCount = claimsRes.doc?.fields?.userCount?.integerValue
+        ? Number(claimsRes.doc.fields.userCount.integerValue)
+        : 0;
+      if (currentCount >= WELCOME_GRANT_MAX_PER_FINGERPRINT) {
+        return 'fingerprint_limit';
+      }
+
+      const commitBody = {
+        writes: [
+          {
+            // Claim one slot on this fingerprint. Absolute write guarded by
+            // updateTime/exists precondition so concurrent claims serialize.
+            update: {
+              name: claimsDocPath,
+              fields: {
+                userCount: { integerValue: String(currentCount + 1) },
+                lastUserId: { stringValue: userId },
+                updatedAt: { integerValue: String(Date.now()) },
+              },
+            },
+            updateMask: { fieldPaths: ['userCount', 'lastUserId', 'updatedAt'] },
+            currentDocument: claimsRes.doc?.updateTime
+              ? { updateTime: claimsRes.doc.updateTime }
+              : { exists: false },
+          },
+          {
+            // One-time marker claim
+            update: {
+              name: markerDocPath,
+              fields: {
+                userId: { stringValue: userId },
+                fingerprintId: { stringValue: fp },
+                amount: { integerValue: String(WELCOME_CREDITS_AMOUNT) },
+                grantedAt: { integerValue: String(Date.now()) },
+              },
+            },
+            currentDocument: { exists: false },
+          },
+          {
+            transform: {
+              document: userDocPath,
+              fieldTransforms: [
+                {
+                  fieldPath: 'credits',
+                  increment: { integerValue: String(WELCOME_CREDITS_AMOUNT) },
+                },
+                {
+                  fieldPath: 'updatedAt',
+                  setToServerValue: 'REQUEST_TIME',
+                },
+              ],
+            },
+          },
+        ],
+      };
+
+      const res = await fetch(`${dbBase}:commit`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(commitBody),
+      });
+
+      if (res.ok) {
+        return 'granted';
+      }
+
+      const errText = await res.text().catch(() => '');
+      if (
+        (res.status === 400 || res.status === 409 || res.status === 412) &&
+        (errText.includes('FAILED_PRECONDITION') ||
+          errText.includes('ABORTED') ||
+          errText.includes('ALREADY_EXISTS'))
+      ) {
+        // Concurrent claim changed state — re-read and retry
+        continue;
+      }
+
+      console.error(`[grantWelcomeCredits] Commit failed: ${res.status} body=${errText}`);
+      return 'error';
+    }
+
+    // Retries exhausted — check whether a concurrent call already granted
+    const markerCheck = await getDocJson(
+      `${dbBase}/users/${userId}/${MARKER_SUBCOLLECTION}/${WELCOME_MARKER_DOC}`,
+      headers
+    );
+    if (markerCheck.status === 200 && markerCheck.doc) {
+      return 'already_granted';
+    }
+    return 'error';
+  } catch (err) {
+    console.error('[grantWelcomeCredits] Error:', err);
+    return 'error';
+  }
 }
 
 /**

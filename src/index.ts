@@ -6,6 +6,7 @@ import {
   createSupportTicketDoc,
   createTransactionDoc,
   saveGenerationDoc,
+  grantWelcomeCredits,
 } from "./services/firestore";
 import { verifyCryptoTransaction } from "./services/verifier";
 import { handleCryptographicHandshake } from "./services/handshake";
@@ -315,6 +316,39 @@ export default {
           status: 500, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
         });
       }
+    }
+
+    // Welcome credits endpoint: one-time grant for newly created accounts.
+    // Idempotent server-side — safe for the client to call on every login.
+    if (url.pathname === "/api/claim-welcome-credits") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const security = await verifyWorkerSecurity(request, env, { requireAuth: true });
+      if (!security.isValid) return security.errorResponse!;
+
+      let body: { fingerprintId?: string } = {};
+      try {
+        body = await request.json();
+      } catch {
+        // Empty/invalid body — fingerprintId stays undefined, grant will deny
+      }
+
+      const projectId = env.FIREBASE_PROJECT_ID as string;
+      const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
+
+      const result = await grantWelcomeCredits(projectId, accessToken, security.user!.uid, body.fingerprintId);
+
+      return new Response(
+        JSON.stringify({ success: result !== "error", granted: result === "granted", result }),
+        {
+          status: result === "error" ? 500 : 200,
+          headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        },
+      );
     }
 
     // Cryptographic Server Handshake
