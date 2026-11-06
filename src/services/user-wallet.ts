@@ -70,18 +70,40 @@ function authHeaders(accessToken: string | null): Record<string, string> {
   return headers;
 }
 
+// Resolved EVM addresses are immutable once written, so cache hits per
+// isolate for 10 minutes. Misses are never cached — a first-time wallet must
+// be created promptly. Keyed by `${projectId}:${userId}`.
+const ADDRESS_CACHE_TTL_MS = 10 * 60 * 1000;
+const addressCache = new Map<string, { address: string; expiresAt: number }>();
+
+function addressCacheKey(projectId: string, userId: string): string {
+  return `${projectId}:${userId}`;
+}
+
 /** Reads users/{uid}.evmAddress. Returns null when absent. */
 export async function getUserEvmAddress(
   projectId: string,
   accessToken: string | null,
   userId: string,
 ): Promise<string | null> {
+  const cacheKey = addressCacheKey(projectId, userId);
+  const hit = addressCache.get(cacheKey);
+  if (hit && hit.expiresAt > Date.now()) return hit.address;
+  if (hit) addressCache.delete(cacheKey);
+
   const url = `https://firestore.googleapis.com/v1/${docPath(projectId, "users", userId)}`;
   try {
     const res = await fetch(url, { headers: authHeaders(accessToken) });
     if (!res.ok) return null;
     const doc = (await res.json()) as any;
-    return doc?.fields?.evmAddress?.stringValue || null;
+    const address = doc?.fields?.evmAddress?.stringValue || null;
+    if (address) {
+      addressCache.set(cacheKey, {
+        address,
+        expiresAt: Date.now() + ADDRESS_CACHE_TTL_MS,
+      });
+    }
+    return address;
   } catch {
     return null;
   }
@@ -187,5 +209,9 @@ export async function getOrCreateUserEvmAddress(
   }
 
   await patchUserEvmAddress(projectId, accessToken, userId, resolvedAddress);
+  addressCache.set(addressCacheKey(projectId, userId), {
+    address: resolvedAddress,
+    expiresAt: Date.now() + ADDRESS_CACHE_TTL_MS,
+  });
   return resolvedAddress;
 }

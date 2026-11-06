@@ -13,6 +13,12 @@ export interface VerifiedFirebaseUser {
  * Replaces the manual JWKS caching + Web Crypto RS256 + Identity Toolkit REST fallback
  * with a well-tested library implementation.
  */
+// Hoisted to module scope: jose caches fetched keys per JWKS instance, so a
+// per-request instance would refetch Google's JWKS on every verification.
+const firebaseJwks = createRemoteJWKSet(
+  new URL('https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com')
+);
+
 export async function verifyFirebaseToken(
   idToken: string,
   projectId?: string
@@ -28,12 +34,7 @@ export async function verifyFirebaseToken(
   }
 
   try {
-    // Use Google's public JWKS endpoint for Firebase Auth
-    const jwks = createRemoteJWKSet(
-      new URL('https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com')
-    );
-
-    const { payload } = await jwtVerify(idToken, jwks, {
+    const { payload } = await jwtVerify(idToken, firebaseJwks, {
       algorithms: ['RS256'],
       issuer: `https://securetoken.google.com/${projectId}`,
       audience: projectId,

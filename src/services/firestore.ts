@@ -24,6 +24,35 @@ let cachedAccessToken: string | null = null;
 let tokenExpiresAt = 0;
 
 /**
+ * Tiny per-isolate TTL cache for expensive read paths. Worker isolates are
+ * ephemeral, so this is a best-effort short-term cache — never use it for
+ * data that must be strongly consistent (credits, quotas).
+ */
+const ttlCache = new Map<string, { value: unknown; expiresAt: number }>();
+const TTL_CACHE_MAX = 5000;
+
+function ttlGet<T>(key: string): T | undefined {
+  const hit = ttlCache.get(key);
+  if (!hit) return undefined;
+  if (hit.expiresAt <= Date.now()) {
+    ttlCache.delete(key);
+    return undefined;
+  }
+  return hit.value as T;
+}
+
+function ttlSet(key: string, value: unknown, ttlMs: number): void {
+  if (ttlCache.size >= TTL_CACHE_MAX) {
+    // Drop expired entries first; if still full, clear oldest-ish by resetting
+    for (const [k, v] of ttlCache) {
+      if (v.expiresAt <= Date.now()) ttlCache.delete(k);
+    }
+    if (ttlCache.size >= TTL_CACHE_MAX) ttlCache.clear();
+  }
+  ttlCache.set(key, { value, expiresAt: Date.now() + ttlMs });
+}
+
+/**
  * Base64URL encoding helper
  */
 function base64UrlEncode(data: Uint8Array | string): string {
@@ -804,14 +833,40 @@ export async function grantWelcomeCredits(
   const dbBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
   const userDocPath = `projects/${projectId}/databases/(default)/documents/users/${userId}`;
   const markerDocPath = `${userDocPath}/${MARKER_SUBCOLLECTION}/${WELCOME_MARKER_DOC}`;
+  const markerUrl = `${dbBase}/users/${userId}/${MARKER_SUBCOLLECTION}/${WELCOME_MARKER_DOC}`;
   const fp = typeof fingerprintId === 'string' ? fingerprintId.trim() : '';
 
+  // Terminal results are permanent for a given uid — cache them briefly so
+  // repeat logins in the same isolate cost zero Firestore reads.
+  const cacheKey = `welcome:${userId}`;
+  const cachedResult = ttlGet<WelcomeGrantResult>(cacheKey);
+  if (
+    cachedResult === 'granted' ||
+    cachedResult === 'already_granted' ||
+    cachedResult === 'ineligible'
+  ) {
+    return cachedResult;
+  }
+
   try {
-    // 1. Account-age gate
+    // 1. One-time marker gate — checked first because it is the common case
+    //    (every returning login) and costs a single doc read.
+    const markerRes = await getDocJson(markerUrl, headers);
+    if (markerRes.status === 200 && markerRes.doc) {
+      ttlSet(cacheKey, 'already_granted', 15 * 60 * 1000);
+      return 'already_granted';
+    }
+    if (markerRes.status !== 200 && markerRes.status !== 404) {
+      console.error(`[grantWelcomeCredits] Failed to fetch marker doc: ${markerRes.status}`);
+      return 'error';
+    }
+
+    // 2. Account-age gate
     const userRes = await getDocJson(`${dbBase}/users/${userId}`, headers);
     if (userRes.status === 200 && userRes.doc) {
       const createTimeMs = userRes.doc.createTime ? Date.parse(userRes.doc.createTime) : NaN;
       if (Number.isFinite(createTimeMs) && createTimeMs < WELCOME_GRANT_CUTOFF_MS) {
+        ttlSet(cacheKey, 'ineligible', 15 * 60 * 1000);
         return 'ineligible';
       }
     } else if (userRes.status !== 404) {
@@ -819,16 +874,6 @@ export async function grantWelcomeCredits(
       return 'error';
     }
     // 404 = doc doesn't exist yet → brand-new account.
-
-    // 2. One-time marker gate
-    const markerRes = await getDocJson(`${dbBase}/users/${userId}/${MARKER_SUBCOLLECTION}/${WELCOME_MARKER_DOC}`, headers);
-    if (markerRes.status === 200 && markerRes.doc) {
-      return 'already_granted';
-    }
-    if (markerRes.status !== 200 && markerRes.status !== 404) {
-      console.error(`[grantWelcomeCredits] Failed to fetch marker doc: ${markerRes.status}`);
-      return 'error';
-    }
 
     // 3. Fingerprint required
     if (!isValidFingerprintId(fp)) {
@@ -922,6 +967,7 @@ export async function grantWelcomeCredits(
       });
 
       if (res.ok) {
+        ttlSet(cacheKey, 'granted', 15 * 60 * 1000);
         return 'granted';
       }
 
@@ -941,11 +987,9 @@ export async function grantWelcomeCredits(
     }
 
     // Retries exhausted — check whether a concurrent call already granted
-    const markerCheck = await getDocJson(
-      `${dbBase}/users/${userId}/${MARKER_SUBCOLLECTION}/${WELCOME_MARKER_DOC}`,
-      headers
-    );
+    const markerCheck = await getDocJson(markerUrl, headers);
     if (markerCheck.status === 200 && markerCheck.doc) {
+      ttlSet(cacheKey, 'already_granted', 15 * 60 * 1000);
       return 'already_granted';
     }
     return 'error';
@@ -1172,11 +1216,10 @@ export async function saveGenerationDoc(
   }
 
   for (let attempt = 0; attempt < 3; attempt++) {
-    // Idempotent: generation already stored -> nothing to do
-    const existingGen = await getFirestoreDocFields(projectId, accessToken, `${histPath}/generations/${generationId}`);
-    if (existingGen) {
-      return { historyId, generationId, deduped: true };
-    }
+    // Idempotency is enforced by the generation doc's exists=false
+    // precondition — no read needed up front. A precondition failure means
+    // either the generation already exists (dedupe) or the history parent
+    // changed concurrently; a single confirming read distinguishes them.
     const histExists = (await getFirestoreDocFields(projectId, accessToken, histPath)) !== null;
 
     const writes: any[] = [
@@ -1230,6 +1273,16 @@ export async function saveGenerationDoc(
       (res.status === 400 || res.status === 409) &&
       (errText.includes('FAILED_PRECONDITION') || errText.includes('ALREADY_EXISTS'))
     ) {
+      // Confirm whether the generation doc already exists (true dedupe) —
+      // only then is there nothing to do.
+      const existingGen = await getFirestoreDocFields(
+        projectId,
+        accessToken,
+        `${histPath}/generations/${generationId}`
+      );
+      if (existingGen) {
+        return { historyId, generationId, deduped: true };
+      }
       continue;
     }
 
@@ -1259,12 +1312,18 @@ export async function isUserAdmin(
   accessToken: string | null,
   userId: string
 ): Promise<boolean> {
+  const cacheKey = `admin:${userId}`;
+  const cached = ttlGet<boolean>(cacheKey);
+  if (cached !== undefined) return cached;
+
   const url = `${FIRESTORE_API}/projects/${projectId}/databases/(default)/documents/users/${userId}`;
   try {
     const res = await fetch(url, { headers: adminHeaders(accessToken) });
     if (!res.ok) return false;
     const doc = (await res.json()) as any;
-    return doc?.fields?.isAdmin?.booleanValue === true;
+    const isAdmin = doc?.fields?.isAdmin?.booleanValue === true;
+    ttlSet(cacheKey, isAdmin, 5 * 60 * 1000);
+    return isAdmin;
   } catch {
     return false;
   }
