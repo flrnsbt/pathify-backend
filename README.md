@@ -1,6 +1,6 @@
-# Vectorizerr Cloudflare Worker Backend
+# Pathify Cloudflare Worker Backend
 
-High-performance, edge-native backend service powered by **Cloudflare Workers** with **Cron Triggers**, **Cryptographic Handshake Verification**, **Multi-Chain Transaction Reconciler**, and **Confidential Support Email Dispatch** for **vectorizerr**.
+High-performance, edge-native backend service powered by **Cloudflare Workers** with **Cron Triggers**, **Cryptographic Handshake Verification**, **Multi-Chain Transaction Reconciler**, and **Confidential Support Email Dispatch** for **pathify**.
 
 ---
 
@@ -49,7 +49,7 @@ High-performance, edge-native backend service powered by **Cloudflare Workers** 
 
 ### 5. Strict CORS Origin Policy
 - CORS is locked to authorized origins:
-  - `https://vectorizerr.pages.dev`
+  - `https://pathify.art`
   - `http://localhost:3000`
   - `http://127.0.0.1:3000`
 
@@ -113,7 +113,7 @@ npm run deploy
 ## 📂 Project Structure
 
 ```
-vectorizerr-backend/
+backend/
 ├── src/
 │   ├── index.ts               # HTTP fetch router, Cron scheduled handler, and CORS rules
 │   ├── config/

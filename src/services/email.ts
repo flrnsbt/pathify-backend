@@ -29,10 +29,10 @@ export async function sendSupportNotificationEmail(
   };
 
   const categoryName = categoryLabels[ticket.category] || ticket.category;
-  const subject = `[Vectorizerr Support #${ticket.id}] ${categoryName}: ${ticket.subject || ticket.category}`;
+  const subject = `[Pathify Support #${ticket.id}] ${categoryName}: ${ticket.subject || ticket.category}`;
 
   const plainTextBody = `
-New Support Request - Vectorizerr Portal
+New Support Request - Pathify Portal
 =========================================
 Ticket ID: #${ticket.id}
 Date/Time: ${new Date(ticket.createdAt).toUTCString()}
@@ -94,7 +94,7 @@ Reply directly to this email to respond to the user at: ${ticket.userEmail}
 <body>
   <div class="container">
     <div class="header">
-      <h1>Vectorizerr Support Ticket #${ticket.id}</h1>
+      <h1>Pathify Support Ticket #${ticket.id}</h1>
       <p>Customer assistance request received from <strong>${ticket.userEmail}</strong></p>
       <div class="badge">${categoryName}</div>
     </div>
@@ -144,7 +144,7 @@ Reply directly to this email to respond to the user at: ${ticket.userEmail}
     return { success: false, error: 'Email provider not configured' };
   }
 
-  const fromAddress = env.EMAIL_FROM || 'Vectorizerr Support <your-support-email@example.com>';
+  const fromAddress = env.EMAIL_FROM || 'Pathify Support <your-support-email@example.com>';
 
   try {
     const resendRes = await fetch('https://api.resend.com/emails', {

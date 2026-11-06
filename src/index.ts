@@ -39,6 +39,7 @@ export interface Env {
 }
 
 export const ALLOWED_ORIGINS = [
+  "https://pathify.art",
   "https://vectorizerr.pages.dev",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
@@ -393,7 +394,7 @@ export default {
           headers: {
             ...security.corsHeaders,
             "Content-Type": "application/json",
-            "Content-Disposition": `attachment; filename="vectorizerr-backup-${new Date().toISOString().slice(0, 10)}.json"`,
+            "Content-Disposition": `attachment; filename="pathify-backup-${new Date().toISOString().slice(0, 10)}.json"`,
           },
         });
       } catch (err) {
