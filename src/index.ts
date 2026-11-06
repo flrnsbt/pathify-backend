@@ -7,6 +7,9 @@ import {
   createTransactionDoc,
   saveGenerationDoc,
   grantWelcomeCredits,
+  isUserAdmin,
+  exportDatabase,
+  importDatabase,
 } from "./services/firestore";
 import { verifyCryptoTransaction } from "./services/verifier";
 import { handleCryptographicHandshake } from "./services/handshake";
@@ -360,6 +363,81 @@ export default {
           headers: { ...security.corsHeaders, "Content-Type": "application/json" },
         },
       );
+    }
+
+    // Admin: export full database as JSON backup (admin-only)
+    if (url.pathname === "/api/admin/export") {
+      if (request.method !== "GET") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const security = await verifyWorkerSecurity(request, env, { requireAuth: true });
+      if (!security.isValid) return security.errorResponse!;
+
+      const projectId = env.FIREBASE_PROJECT_ID as string;
+      const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
+
+      const admin = await isUserAdmin(projectId, accessToken, security.user!.uid);
+      if (!admin) {
+        return new Response(JSON.stringify({ error: "Forbidden: admin access required" }), {
+          status: 403, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      try {
+        const backup = await exportDatabase(projectId, accessToken);
+        return new Response(JSON.stringify(backup), {
+          status: 200,
+          headers: {
+            ...security.corsHeaders,
+            "Content-Type": "application/json",
+            "Content-Disposition": `attachment; filename="vectorizerr-backup-${new Date().toISOString().slice(0, 10)}.json"`,
+          },
+        });
+      } catch (err) {
+        console.error("[admin/export] Failed:", err);
+        return new Response(JSON.stringify({ error: "Export failed" }), {
+          status: 500, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // Admin: import JSON database backup (admin-only)
+    if (url.pathname === "/api/admin/import") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const security = await verifyWorkerSecurity(request, env, { requireAuth: true });
+      if (!security.isValid) return security.errorResponse!;
+
+      const projectId = env.FIREBASE_PROJECT_ID as string;
+      const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
+
+      const admin = await isUserAdmin(projectId, accessToken, security.user!.uid);
+      if (!admin) {
+        return new Response(JSON.stringify({ error: "Forbidden: admin access required" }), {
+          status: 403, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      let body: { documents?: any[] };
+      try {
+        body = await request.json();
+      } catch {
+        return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+          status: 400, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const result = await importDatabase(projectId, accessToken, body.documents || []);
+      return new Response(JSON.stringify({ success: result.failed === 0, ...result }), {
+        status: 200, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // Cryptographic Server Handshake

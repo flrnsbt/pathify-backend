@@ -1238,3 +1238,193 @@ export async function saveGenerationDoc(
 
   throw new Error('Failed to save generation in Firestore: precondition retries exhausted');
 }
+
+/* ------------------------------------------------------------------ */
+/* Admin: database backup (export) & restore (import)                  */
+/* ------------------------------------------------------------------ */
+
+const FIRESTORE_API = 'https://firestore.googleapis.com/v1';
+const MAX_EXPORT_DEPTH = 6;
+const MAX_IMPORT_DOCUMENTS = 100_000;
+
+function adminHeaders(accessToken: string | null): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+  return headers;
+}
+
+/** Server-side admin check: users/{uid}.isAdmin must be boolean true. */
+export async function isUserAdmin(
+  projectId: string,
+  accessToken: string | null,
+  userId: string
+): Promise<boolean> {
+  const url = `${FIRESTORE_API}/projects/${projectId}/databases/(default)/documents/users/${userId}`;
+  try {
+    const res = await fetch(url, { headers: adminHeaders(accessToken) });
+    if (!res.ok) return false;
+    const doc = (await res.json()) as any;
+    return doc?.fields?.isAdmin?.booleanValue === true;
+  } catch {
+    return false;
+  }
+}
+
+interface ExportedDocument {
+  name: string;
+  fields?: Record<string, any>;
+  createTime?: string;
+  updateTime?: string;
+}
+
+async function listCollectionIds(
+  parentDocPath: string,
+  projectId: string,
+  accessToken: string | null
+): Promise<string[]> {
+  const ids: string[] = [];
+  let pageToken: string | undefined;
+  do {
+    const url = `${FIRESTORE_API}/${parentDocPath}:listCollectionIds`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: adminHeaders(accessToken),
+      body: JSON.stringify({ pageSize: 100, ...(pageToken ? { pageToken } : {}) }),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`listCollectionIds failed (${res.status}): ${errText}`);
+    }
+    const data = (await res.json()) as { collectionIds?: string[]; nextPageToken?: string };
+    ids.push(...(data.collectionIds || []));
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return ids;
+}
+
+async function listDocuments(
+  collectionPath: string,
+  projectId: string,
+  accessToken: string | null
+): Promise<ExportedDocument[]> {
+  const docs: ExportedDocument[] = [];
+  let pageToken: string | undefined;
+  do {
+    const url = `${FIRESTORE_API}/${collectionPath}?pageSize=300${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`;
+    const res = await fetch(url, { headers: adminHeaders(accessToken) });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`listDocuments failed for ${collectionPath} (${res.status}): ${errText}`);
+    }
+    const data = (await res.json()) as { documents?: ExportedDocument[]; nextPageToken?: string };
+    docs.push(...(data.documents || []));
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return docs;
+}
+
+/**
+ * Recursively exports every document in the database (all collections and
+ * subcollections, depth-capped) in raw Firestore REST format so bytesValue
+ * fields (compressed SVGs) round-trip exactly.
+ */
+export async function exportDatabase(
+  projectId: string,
+  accessToken: string | null
+): Promise<{ exportedAt: number; projectId: string; documents: ExportedDocument[] }> {
+  const dbRoot = `projects/${projectId}/databases/(default)/documents`;
+  const documents: ExportedDocument[] = [];
+
+  const walk = async (collectionPath: string, depth: number): Promise<void> => {
+    if (depth > MAX_EXPORT_DEPTH) return;
+    const docs = await listDocuments(collectionPath, projectId, accessToken);
+    for (const doc of docs) {
+      documents.push({
+        name: doc.name,
+        fields: doc.fields,
+        createTime: doc.createTime,
+        updateTime: doc.updateTime,
+      });
+      // Recurse into this document's subcollections
+      const subIds = await listCollectionIds(doc.name, projectId, accessToken);
+      for (const subId of subIds) {
+        await walk(`${doc.name}/${subId}`, depth + 1);
+      }
+    }
+  };
+
+  // Discover root collections, then walk each
+  const rootIds = await listCollectionIds(dbRoot, projectId, accessToken);
+  for (const collectionId of rootIds) {
+    await walk(`${dbRoot}/${collectionId}`, 1);
+  }
+
+  return { exportedAt: Date.now(), projectId, documents };
+}
+
+export interface ImportResult {
+  imported: number;
+  failed: number;
+  errors: string[];
+}
+
+/**
+ * Restores documents from an exportDatabase() payload. Each document is
+ * upserted via PATCH (full replace of provided fields). Document names are
+ * strictly validated to stay inside this project's database.
+ */
+export async function importDatabase(
+  projectId: string,
+  accessToken: string | null,
+  documents: ExportedDocument[]
+): Promise<ImportResult> {
+  const result: ImportResult = { imported: 0, failed: 0, errors: [] };
+  if (!Array.isArray(documents) || documents.length === 0) {
+    result.errors.push('Backup contains no documents.');
+    return result;
+  }
+  if (documents.length > MAX_IMPORT_DOCUMENTS) {
+    result.errors.push(`Backup too large: ${documents.length} documents (max ${MAX_IMPORT_DOCUMENTS}).`);
+    return result;
+  }
+
+  const allowedPrefix = `projects/${projectId}/databases/(default)/documents/`;
+
+  for (const doc of documents) {
+    const name = typeof doc?.name === 'string' ? doc.name : '';
+    if (!name.startsWith(allowedPrefix) || name.length <= allowedPrefix.length) {
+      result.failed++;
+      if (result.errors.length < 20) result.errors.push(`Rejected document name: ${name || '(missing)'}`);
+      continue;
+    }
+    if (!doc.fields || typeof doc.fields !== 'object') {
+      result.failed++;
+      if (result.errors.length < 20) result.errors.push(`Document ${name} has no valid fields.`);
+      continue;
+    }
+
+    try {
+      const res = await fetch(`${FIRESTORE_API}/${name}`, {
+        method: 'PATCH',
+        headers: adminHeaders(accessToken),
+        body: JSON.stringify({ fields: doc.fields }),
+      });
+      if (res.ok) {
+        result.imported++;
+      } else {
+        result.failed++;
+        const errText = await res.text().catch(() => '');
+        if (result.errors.length < 20) {
+          result.errors.push(`${name}: ${res.status} ${errText.slice(0, 200)}`);
+        }
+      }
+    } catch (err) {
+      result.failed++;
+      if (result.errors.length < 20) {
+        result.errors.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  return result;
+}
