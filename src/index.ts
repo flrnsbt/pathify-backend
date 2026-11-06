@@ -41,20 +41,12 @@ export const ALLOWED_ORIGINS = [
   "http://127.0.0.1:3000",
 ];
 
-// Lazy tracking state: only runs active checks when a transaction has been created
-let activeTrackingUntil = 0;
-
-export function activateTransactionTracking(durationMs = 15 * 60 * 1000): void {
-  activeTrackingUntil = Math.max(activeTrackingUntil, Date.now() + durationMs);
-}
-
-export function deactivateTransactionTracking(): void {
-  activeTrackingUntil = 0;
-}
-
-export function hasActivePendingTracking(): boolean {
-  return Date.now() < activeTrackingUntil;
-}
+// Transaction verification is driven by the TransactionScheduler Durable
+// Object: creating a transaction (or refreshing credits) arms its alarm,
+// which checks ALL pending transactions at once and re-arms itself every
+// ~20s until none remain, then goes dormant. The cron trigger below is only
+// a 1-minute safety net — it asks the DO whether it is already awake before
+// doing any Firestore work, so idle periods cost ~nothing.
 
 export function getCorsHeaders(request: Request): Record<string, string> {
   const origin = request.headers.get("Origin") || "";
@@ -184,39 +176,58 @@ export async function processPendingTransactions(
 
 export default {
   /**
-   * Cloudflare Cron Trigger (Scheduled event)
-   * Operates lazily: if no pending transactions are actively being tracked,
-   * it exits immediately in 1ms without querying Firestore or consuming resources.
+   * Cloudflare Cron Trigger (Scheduled event) — runs every minute.
+   * Safety net for the TransactionScheduler DO: if the DO's alarm is armed it
+   * is already checking all pending transactions, so this exits immediately.
+   * Otherwise it sweeps pending transactions once; if any remain unresolved
+   * (e.g. the DO trigger was missed), it re-arms the DO for fast checks.
    */
   async scheduled(
     event: ScheduledEvent,
     env: Env,
     ctx: ExecutionContext,
   ): Promise<void> {
-    // Lazy check: skip execution if no transactions are actively pending
-    if (!hasActivePendingTracking()) {
-      console.log(
-        `[CRON] Idle at ${new Date(event.scheduledTime).toISOString()}: No active pending transactions. Skipping execution.`,
-      );
-      return;
-    }
-
-    console.log(
-      `[CRON] Active tracking triggered at ${new Date(event.scheduledTime).toISOString()}`,
-    );
-
     ctx.waitUntil(
-      processPendingTransactions(env).then((res) => {
-        console.log(
-          `[CRON] Finished: processed ${res.processedCount}, confirmed ${res.confirmedCount}, failed ${res.failedCount}, pending ${res.pendingCount}`,
-        );
-        if (res.pendingCount === 0) {
-          deactivateTransactionTracking();
-          console.log(
-            "[CRON] All transactions confirmed or resolved. Scheduler entered dormant state.",
-          );
+      (async () => {
+        if (env.TRANSACTION_SCHEDULER) {
+          try {
+            const id = env.TRANSACTION_SCHEDULER.idFromName("global_transaction_scheduler");
+            const stub = env.TRANSACTION_SCHEDULER.get(id);
+            const statusRes = await stub.fetch(new Request("http://internal/status"));
+            const status = (await statusRes.json()) as { active?: boolean };
+            if (status.active) {
+              console.log(
+                `[CRON] Idle at ${new Date(event.scheduledTime).toISOString()}: scheduler DO is active. Skipping sweep.`,
+              );
+              return;
+            }
+          } catch (err) {
+            console.warn("[CRON] Could not query scheduler DO status:", err);
+          }
         }
-      }),
+
+        console.log(
+          `[CRON] Sweep at ${new Date(event.scheduledTime).toISOString()}: scheduler DO dormant, checking pending transactions.`,
+        );
+
+        const result = await processPendingTransactions(env);
+        console.log(
+          `[CRON] Sweep finished: processed ${result.processedCount}, confirmed ${result.confirmedCount}, failed ${result.failedCount}, pending ${result.pendingCount}`,
+        );
+
+        // Pending transactions remain but the DO is dormant — arm it so
+        // verification continues at the fast interval until all resolve.
+        if (result.pendingCount > 0 && env.TRANSACTION_SCHEDULER) {
+          try {
+            const id = env.TRANSACTION_SCHEDULER.idFromName("global_transaction_scheduler");
+            const stub = env.TRANSACTION_SCHEDULER.get(id);
+            await stub.fetch(new Request("http://internal/trigger"));
+            console.log(`[CRON] Re-armed scheduler DO for ${result.pendingCount} pending transaction(s).`);
+          } catch (err) {
+            console.warn("[CRON] Could not trigger scheduler DO:", err);
+          }
+        }
+      })(),
     );
   },
 
@@ -367,8 +378,6 @@ export default {
       const security = await verifyWorkerSecurity(request, env, { requireAuth: true });
       if (!security.isValid) return security.errorResponse!;
 
-      activateTransactionTracking();
-
       if (env.TRANSACTION_SCHEDULER) {
         try {
           const id = env.TRANSACTION_SCHEDULER.idFromName("global_transaction_scheduler");
@@ -380,8 +389,6 @@ export default {
       }
 
       const result = await processPendingTransactions(env, security.user!.uid);
-
-      if (result.pendingCount === 0) deactivateTransactionTracking();
 
       return new Response(
         JSON.stringify({ success: true, timestamp: new Date().toISOString(), ...result }),
@@ -502,7 +509,6 @@ export default {
         statusMessage: body.statusMessage,
       });
 
-      activateTransactionTracking();
       if (env.TRANSACTION_SCHEDULER) {
         try {
           const id = env.TRANSACTION_SCHEDULER.idFromName("global_transaction_scheduler");
