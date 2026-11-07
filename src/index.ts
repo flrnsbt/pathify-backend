@@ -38,6 +38,11 @@ export interface Env {
   TRANSACTION_SCHEDULER?: DurableObjectNamespace<TransactionScheduler>;
 }
 
+// Transactions pending longer than this are expired: they are marked failed
+// so the scheduler stops re-checking them on every alarm (e.g. a QR/direct
+// payment whose txHash was never submitted, or a tx that never mined).
+const MAX_PENDING_MS = 24 * 60 * 60 * 1000;
+
 export const ALLOWED_ORIGINS = [
   "https://pathify.art",
   "https://vectorizerr.pages.dev",
@@ -97,6 +102,18 @@ export async function processPendingTransactions(
 
   for (const tx of pending) {
     try {
+      if (Date.now() - tx.createdAt > MAX_PENDING_MS) {
+        const reason = "Transaction expired: no on-chain confirmation within the pending window.";
+        await updateTransactionDoc(projectId, accessToken, tx.id, {
+          status: "failed",
+          statusMessage: reason,
+          updatedAt: Date.now(),
+        });
+        failed.push({ id: tx.id, reason });
+        console.log(`[EXPIRED] Tx ${tx.id} for user ${tx.userId}: pending longer than ${MAX_PENDING_MS}ms`);
+        continue;
+      }
+
       console.log(`[PROCESSING] Tx ${tx.id} for user ${tx.userId} on chain ${tx.chainKey} (${tx.cryptoToken})`);
       const verification = await verifyCryptoTransaction(tx, env);
       console.log(
