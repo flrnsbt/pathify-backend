@@ -490,7 +490,7 @@ export const ERC20_CONTRACTS: Record<
   },
   421614: {
     USDC: {
-      address: "0x75faf114edb188e3173481b5cade5cf340a529f3",
+      address: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
       decimals: 6,
     },
   },
@@ -500,7 +500,7 @@ export const ERC20_CONTRACTS: Record<
       decimals: 6,
     },
     USDC: {
-      address: "0x5fd84259d66cd46123540766be93dfe6d43133df",
+      address: "0x5fd84259d66Cd46123540766Be93DFE6D43130D7",
       decimals: 6,
     },
   },
