@@ -7,7 +7,8 @@ import { Env, processPendingTransactions } from '../index';
  * Implements an event-driven, self-chaining alarm timer for lazy transaction verification:
  * 1. When a transaction is submitted, the worker calls this DO to schedule a check.
  * 2. When the alarm triggers, it checks on-chain receipts for all pending transactions in Firestore.
- * 3. If any transactions remain in 'pending' status, it arms a new alarm for 20-30 seconds later.
+ * 3. If any transactions remain in 'pending' status (and are within the
+ *    periodic TTL — older ones await a manual refresh), it arms a new alarm.
  * 4. Once all pending transactions are confirmed or resolved, it stops setting alarms and goes
  *    completely dormant (0 CPU cycles, 0 cron wakeups, 0 unnecessary Firestore queries).
  */

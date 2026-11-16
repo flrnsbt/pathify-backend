@@ -39,9 +39,13 @@ export interface Env {
 }
 
 // Transactions pending longer than this are expired: they are marked failed
-// so the scheduler stops re-checking them on every alarm (e.g. a QR/direct
-// payment whose txHash was never submitted, or a tx that never mined).
-const MAX_PENDING_MS = 24 * 60 * 60 * 1000;
+// so no further verification (periodic or manual) is possible for them.
+const MAX_PENDING_MS = 3 * 60 * 60 * 1000;
+
+// Periodic sweeps (cron + scheduler DO alarm) only verify transactions younger
+// than this. Older pending transactions are left alone until the user
+// manually triggers a refresh via /api/refresh-credits.
+const PERIODIC_TTL_MS = 20 * 60 * 1000;
 
 export const ALLOWED_ORIGINS = [
   "https://pathify.art",
@@ -53,9 +57,11 @@ export const ALLOWED_ORIGINS = [
 // Transaction verification is driven by the TransactionScheduler Durable
 // Object: creating a transaction (or refreshing credits) arms its alarm,
 // which checks ALL pending transactions at once and re-arms itself every
-// ~20s until none remain, then goes dormant. The cron trigger below is only
-// a 1-minute safety net — it asks the DO whether it is already awake before
-// doing any Firestore work, so idle periods cost ~nothing.
+// ~20s until none remain, then goes dormant. Periodic sweeps only touch
+// transactions younger than PERIODIC_TTL_MS (10 min); older ones wait for a
+// manual /api/refresh-credits and expire after MAX_PENDING_MS (2h). The cron
+// trigger below is only a 30-minute safety net — it asks the DO whether it is
+// already awake before doing any Firestore work, so idle periods cost ~nothing.
 
 export function getCorsHeaders(request: Request): Record<string, string> {
   const origin = request.headers.get("Origin") || "";
@@ -77,6 +83,7 @@ export function getCorsHeaders(request: Request): Record<string, string> {
 export async function processPendingTransactions(
   env: Env,
   userIdFilter?: string,
+  opts?: { includeStale?: boolean },
 ): Promise<{
   processedCount: number;
   confirmedCount: number;
@@ -97,12 +104,15 @@ export async function processPendingTransactions(
     userIdFilter,
   );
 
+  const includeStale = opts?.includeStale === true;
   const confirmed: Array<{ id: string; txHash?: string; credits: number }> = [];
   const failed: Array<{ id: string; reason: string }> = [];
+  let skippedStale = 0;
 
   for (const tx of pending) {
     try {
-      if (Date.now() - tx.createdAt > MAX_PENDING_MS) {
+      const age = Date.now() - tx.createdAt;
+      if (age > MAX_PENDING_MS) {
         const reason = "Transaction expired: no on-chain confirmation within the pending window.";
         await updateTransactionDoc(projectId, accessToken, tx.id, {
           status: "failed",
@@ -111,6 +121,13 @@ export async function processPendingTransactions(
         });
         failed.push({ id: tx.id, reason });
         console.log(`[EXPIRED] Tx ${tx.id} for user ${tx.userId}: pending longer than ${MAX_PENDING_MS}ms`);
+        continue;
+      }
+
+      // Periodic sweeps skip transactions past the TTL — they can still be
+      // verified by a manual refresh, and will expire at MAX_PENDING_MS.
+      if (!includeStale && age > PERIODIC_TTL_MS) {
+        skippedStale++;
         continue;
       }
 
@@ -183,7 +200,7 @@ export async function processPendingTransactions(
     }
   }
 
-  const remainingPending = pending.length - confirmed.length - failed.length;
+  const remainingPending = pending.length - confirmed.length - failed.length - skippedStale;
 
   return {
     processedCount: pending.length,
@@ -197,7 +214,7 @@ export async function processPendingTransactions(
 
 export default {
   /**
-   * Cloudflare Cron Trigger (Scheduled event) — runs every minute.
+   * Cloudflare Cron Trigger (Scheduled event) — runs every 30 minutes.
    * Safety net for the TransactionScheduler DO: if the DO's alarm is armed it
    * is already checking all pending transactions, so this exits immediately.
    * Otherwise it sweeps pending transactions once; if any remain unresolved
@@ -484,7 +501,9 @@ export default {
         }
       }
 
-      const result = await processPendingTransactions(env, security.user!.uid);
+      // Manual "refresh later": includes transactions past the periodic TTL
+      // (but not expired ones — those are still marked failed above).
+      const result = await processPendingTransactions(env, security.user!.uid, { includeStale: true });
 
       return new Response(
         JSON.stringify({ success: true, timestamp: new Date().toISOString(), ...result }),

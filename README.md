@@ -7,7 +7,7 @@ High-performance, edge-native backend service powered by **Cloudflare Workers** 
 ## ⚡ Edge Architecture Overview
 
 1. **Zero Cold Starts**: Executes immediately on Cloudflare's global edge network (300+ locations).
-2. **Cron Triggers (`* * * * *`)**: Monitors and reconciles pending cryptocurrency payments on-chain every minute without external scheduler overhead.
+2. **Cron Triggers (`*/30 * * * *`)**: Safety-net sweep every 30 minutes; active verification is driven by a Durable Object alarm for transactions pending less than 10 minutes.
 3. **Multi-Chain RPC Verification**: Directly verifies transactions across BNB Smart Chain, Ethereum, Polygon, Base, Arbitrum, and Bitcoin.
 4. **Google Firebase REST & WebCrypto**: Signs RS256 Google Service Account JWTs at the edge using `crypto.subtle` to perform atomic increments in Firestore.
 5. **Confidential Customer Support**: Handles customer assistance inquiries with safe edge email delivery to `SUPPORT_EMAIL` (`your-support-email@example.com`), keeping the recipient email address strictly hidden from client bundles.
@@ -41,8 +41,10 @@ High-performance, edge-native backend service powered by **Cloudflare Workers** 
   - Attaches user authentication ID if provided.
   - Logs client metadata (IP, country, User Agent).
 
-### 4. Background Transaction Tracker (Cron)
-- Runs every minute via Cloudflare Scheduled Events.
+### 4. Background Transaction Tracker (Cron + Durable Object)
+- Cron runs every 30 minutes as a safety net; a `TransactionScheduler` Durable Object alarm performs fast checks (~20s) while fresh pending transactions exist.
+- Periodic sweeps only verify transactions pending for less than 10 minutes; older transactions are skipped until the user manually refreshes via `/api/refresh-credits`.
+- Transactions pending for more than 2 hours are marked `failed` (expired) and are no longer refreshed.
 - Queries `status: 'pending'` transactions from the `transactions` Firestore collection.
 - Checks block confirmations and transfer recipients on-chain.
 - Atomically increments user credits and marks transactions `confirmed` or `failed`.
