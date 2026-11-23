@@ -10,17 +10,19 @@ import {
   isUserAdmin,
   exportDatabase,
   importDatabase,
+  CryptoTransactionDoc,
 } from "./services/firestore";
 import { verifyCryptoTransaction } from "./services/verifier";
 import { handleCryptographicHandshake } from "./services/handshake";
 import { sendSupportNotificationEmail } from "./services/email";
 import { verifyWorkerSecurity } from "./services/security";
 import type { TransactionScheduler } from "./services/scheduler";
-import { getChainsConfig, getERC20ContractsForChains, SupportedChainKey, SupportedToken, DEFAULT_TESTNET_CHAIN_IDS } from "./config/chains";
+import { getChainsConfig, getERC20ContractsForChains, SupportedChainKey, SupportedToken, DEFAULT_TESTNET_CHAIN_IDS, ERC20_CONTRACTS, ChainConfig } from "./config/chains";
 import { getWalletAddresses, findWalletAddress } from "./config/wallets";
 import { CREDIT_PACKS, findPackById, getTokenPriceUsd, calculateCryptoAmount } from "./config/packs";
 import { GENERATIONS_PER_UNLOCK } from "./config/limits";
 import { getOrCreateUserEvmAddress, getUserEvmAddress } from "./services/user-wallet";
+import { parseTokenUnits, formatTokenUnits, addUniquenessTag } from "./services/amounts";
 
 export { TransactionScheduler } from "./services/scheduler";
 
@@ -46,6 +48,24 @@ const MAX_PENDING_MS = 3 * 60 * 60 * 1000;
 // than this. Older pending transactions are left alone until the user
 // manually triggers a refresh via /api/refresh-credits.
 const PERIODIC_TTL_MS = 20 * 60 * 1000;
+
+// Direct (manual/QR) payments get a server-generated unique amount and a
+// limited validity window. The unique amount is the payment's identifier —
+// no transaction hash is accepted from the user.
+const DIRECT_PAYMENT_TTL_MS = 60 * 60 * 1000;
+
+/** Decimals used to express a token amount on a given chain. */
+function tokenDecimals(
+  chainConfig: ChainConfig,
+  token: SupportedToken,
+): number {
+  if (!chainConfig.isEvm) return 8; // BTC
+  if (token === chainConfig.nativeToken) return chainConfig.nativeDecimals || 18;
+  const contract = chainConfig.chainId != null
+    ? ERC20_CONTRACTS[chainConfig.chainId]?.[token]
+    : undefined;
+  return contract?.decimals ?? (token === "USDT" || token === "USDC" ? 6 : 18);
+}
 
 export const ALLOWED_ORIGINS = [
   "https://pathify.art",
@@ -111,6 +131,20 @@ export async function processPendingTransactions(
 
   for (const tx of pending) {
     try {
+      // Direct-payment invoices expire on their own schedule (shorter than the
+      // generic pending window) — after expiry no transfer can be credited.
+      if (tx.expiresAt && Date.now() > tx.expiresAt) {
+        const reason = "Payment window expired before the transfer was detected on-chain.";
+        await updateTransactionDoc(projectId, accessToken, tx.id, {
+          status: "failed",
+          statusMessage: reason,
+          updatedAt: Date.now(),
+        });
+        failed.push({ id: tx.id, reason });
+        console.log(`[EXPIRED] Tx ${tx.id} for user ${tx.userId}: direct payment window elapsed`);
+        continue;
+      }
+
       const age = Date.now() - tx.createdAt;
       if (age > MAX_PENDING_MS) {
         const reason = "Transaction expired: no on-chain confirmation within the pending window.";
@@ -184,13 +218,24 @@ export async function processPendingTransactions(
 
         console.log(`[FAILED] Tx ${tx.id}: ${verification.statusMessage}`);
       } else {
-        // Still pending - optionally update message if informative
+        // Still pending - persist informative message changes and the EVM
+        // direct-scan cursor so the next sweep resumes where this one stopped.
+        const patch: Partial<CryptoTransactionDoc> = {};
         if (
           verification.statusMessage &&
           verification.statusMessage !== tx.statusMessage
         ) {
+          patch.statusMessage = verification.statusMessage;
+        }
+        if (
+          verification.nextScanCursor != null &&
+          verification.nextScanCursor !== tx.scanCursor
+        ) {
+          patch.scanCursor = verification.nextScanCursor;
+        }
+        if (Object.keys(patch).length > 0) {
           await updateTransactionDoc(projectId, accessToken, tx.id, {
-            statusMessage: verification.statusMessage,
+            ...patch,
             updatedAt: Date.now(),
           });
         }
@@ -582,11 +627,33 @@ export default {
 
       const cryptoToken = (body.cryptoToken || chainConfig.nativeToken) as SupportedToken;
       const tokenPrice = await getTokenPriceUsd(cryptoToken);
-      const cryptoAmount = calculateCryptoAmount(pack.usdPrice, cryptoToken, tokenPrice);
+      let cryptoAmount = calculateCryptoAmount(pack.usdPrice, cryptoToken, tokenPrice);
       if (!cryptoAmount) {
         return new Response(JSON.stringify({ error: "Unable to calculate crypto amount" }), {
           status: 503, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
         });
+      }
+
+      const isDirect = body.paymentMethod === "direct";
+      let expiresAt: number | undefined;
+      if (isDirect) {
+        // SECURITY: manual/direct payments are identified by a unique,
+        // server-generated amount — never by a user-supplied tx hash. The
+        // tag adds at most ~$0.50 of overpayment so the amount stays unique
+        // per transaction while remaining cheap for the payer.
+        if (!tokenPrice || tokenPrice <= 0) {
+          return new Response(JSON.stringify({ error: "Unable to calculate crypto amount" }), {
+            status: 503, headers: { ...security.corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const decimals = tokenDecimals(chainConfig, cryptoToken);
+        const taggedUnits = addUniquenessTag(
+          parseTokenUnits(cryptoAmount, decimals),
+          decimals,
+          tokenPrice,
+        );
+        cryptoAmount = formatTokenUnits(taggedUnits, decimals);
+        expiresAt = Date.now() + DIRECT_PAYMENT_TTL_MS;
       }
 
       // wallets.*.json still defines which chain/token combos are enabled;
@@ -618,8 +685,9 @@ export default {
         chainKey: body.chainKey,
         chainId: chainConfig.chainId,
         toAddress,
-        txHash: body.txHash || "",
-        paymentMethod: body.paymentMethod === "direct" ? "direct" : "web3",
+        txHash: isDirect ? "" : body.txHash || "",
+        paymentMethod: isDirect ? "direct" : "web3",
+        expiresAt,
         fromAddress: body.fromAddress,
         statusMessage: body.statusMessage,
       });
@@ -635,7 +703,7 @@ export default {
       }
 
       return new Response(
-        JSON.stringify({ success: true, transactionId: txId, expectedAmount: cryptoAmount, toAddress }),
+        JSON.stringify({ success: true, transactionId: txId, expectedAmount: cryptoAmount, toAddress, expiresAt }),
         { status: 201, headers: { ...security.corsHeaders, "Content-Type": "application/json" } },
       );
     }

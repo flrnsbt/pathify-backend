@@ -13,6 +13,9 @@ export interface CryptoTransactionDoc {
   chainId?: number;
   toAddress: string;
   txHash: string;
+  paymentMethod?: 'web3' | 'direct';
+  expiresAt?: number;
+  scanCursor?: number;
   status: 'pending' | 'confirmed' | 'failed' | 'cancelled';
   statusMessage?: string;
   createdAt: number;
@@ -298,6 +301,9 @@ export async function getPendingTransactions(
         chainId: parsed.chainId,
         toAddress: parsed.toAddress || '',
         txHash: parsed.txHash || '',
+        paymentMethod: parsed.paymentMethod === 'direct' ? 'direct' : 'web3',
+        expiresAt: parsed.expiresAt,
+        scanCursor: parsed.scanCursor,
         status: parsed.status || 'pending',
         statusMessage: parsed.statusMessage,
         createdAt: parsed.createdAt || Date.now(),
@@ -486,6 +492,8 @@ export interface CreateTransactionInput {
   toAddress: string;
   txHash?: string;
   paymentMethod?: "web3" | "direct";
+  expiresAt?: number;
+  scanCursor?: number;
   fromAddress?: string;
   statusMessage?: string;
 }
