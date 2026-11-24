@@ -10,7 +10,7 @@ High-performance, edge-native backend service powered by **Cloudflare Workers** 
 2. **Cron Triggers (`*/30 * * * *`)**: Safety-net sweep every 30 minutes; active verification is driven by a Durable Object alarm for transactions pending less than 10 minutes.
 3. **Multi-Chain RPC Verification**: Directly verifies transactions across BNB Smart Chain, Ethereum, Polygon, Base, Arbitrum, and Bitcoin.
 4. **Google Firebase REST & WebCrypto**: Signs RS256 Google Service Account JWTs at the edge using `crypto.subtle` to perform atomic increments in Firestore.
-5. **Confidential Customer Support**: Handles customer assistance inquiries with safe edge email delivery to `SUPPORT_EMAIL` (`your-support-email@example.com`), keeping the recipient email address strictly hidden from client bundles.
+5. **Confidential Customer Support**: Handles customer assistance inquiries with safe edge email delivery to `SUPPORT_EMAIL`, keeping the recipient email address strictly hidden from client bundles.
 
 ---
 
@@ -35,7 +35,7 @@ High-performance, edge-native backend service powered by **Cloudflare Workers** 
 ### 3. Customer Support & Assistance Dispatch (`POST /api/support`)
 - **Route**: `/api/support` or `/api/contact`
 - **Purpose**: Receives user assistance requests (particularly crypto transaction inquiries), creates an immutable ticket record in Firestore (`support_tickets` collection), and sends a notification email to `SUPPORT_EMAIL`.
-- **Confidentiality**: The destination email address (`your-support-email@example.com`) is kept strictly server-side and never exposed to the client.
+- **Confidentiality**: The destination email address (`SUPPORT_EMAIL`) is kept strictly server-side and never exposed to the client.
 - **Security**:
   - Validates `x-api-secret` and App Check.
   - Attaches user authentication ID if provided.
@@ -73,6 +73,9 @@ FIREBASE_CLIENT_EMAIL=your-service-account@vectorizerr.iam.gserviceaccount.com
 FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 API_SECRET=your-secure-shared-secret
 SUPPORT_EMAIL=your-support-email@example.com
+EMAIL_FROM=Pathify Support <your-support-email@example.com>
+RESEND_API_KEY=your-resend-api-key
+HANDSHAKE_SECRET=your-dedicated-handshake-secret
 ```
 
 ### 3. Start Local Edge Worker
@@ -90,17 +93,20 @@ The worker will listen on `http://localhost:8787`.
 npx wrangler secret put FIREBASE_PRIVATE_KEY
 npx wrangler secret put FIREBASE_CLIENT_EMAIL
 npx wrangler secret put API_SECRET
+npx wrangler secret put SUPPORT_EMAIL
+npx wrangler secret put EMAIL_FROM
+npx wrangler secret put RESEND_API_KEY
+npx wrangler secret put HANDSHAKE_SECRET
 ```
 
 ### 2. Configure Environment Variables in `wrangler.json`
-`wrangler.json` provides edge defaults:
+`wrangler.json` provides edge defaults. Email-related values (`SUPPORT_EMAIL`, `EMAIL_FROM`) are configured as secrets, not vars:
 ```json
 {
   "vars": {
     "ENVIRONMENT": "production",
     "FIREBASE_PROJECT_ID": "vectorizerr",
-    "REQUIRED_CONFIRMATIONS": "1",
-    "SUPPORT_EMAIL": "your-support-email@example.com"
+    "REQUIRED_CONFIRMATIONS": "1"
   }
 }
 ```

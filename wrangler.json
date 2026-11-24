@@ -36,10 +36,7 @@
   "vars": {
     "ENVIRONMENT": "production",
     "ENABLE_TESTNETS": "false",
-    "FIREBASE_CLIENT_EMAIL": "your-service-account@vectorizerr.iam.gserviceaccount.com",
     "FIREBASE_PROJECT_ID": "vectorizerr",
-    "REQUIRED_CONFIRMATIONS": "1",
-    "SUPPORT_EMAIL": "your-support-email@example.com",
-    "EMAIL_FROM": "Pathify Support <your-support-email@example.com>"
+    "REQUIRED_CONFIRMATIONS": "1"
   }
 }

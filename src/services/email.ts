@@ -144,7 +144,11 @@ Reply directly to this email to respond to the user at: ${ticket.userEmail}
     return { success: false, error: 'Email provider not configured' };
   }
 
-  const fromAddress = env.EMAIL_FROM || 'Pathify Support <your-support-email@example.com>';
+  if (!env.EMAIL_FROM) {
+    console.warn('[Support] EMAIL_FROM not configured — notification email skipped');
+    return { success: false, error: 'EMAIL_FROM not configured' };
+  }
+  const fromAddress = env.EMAIL_FROM;
 
   try {
     const resendRes = await fetch('https://api.resend.com/emails', {
