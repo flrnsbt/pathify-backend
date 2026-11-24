@@ -33,6 +33,7 @@ export interface Env {
   HANDSHAKE_SECRET?: string;
   API_SECRET?: string;
   TESTNET_SECRET?: string;
+  ENABLE_TESTNETS?: string;
   WALLET_ENCRYPTION_SECRET?: string;
   SUPPORT_EMAIL?: string;
   RESEND_API_KEY?: string;
@@ -333,7 +334,7 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    const isTestnet : boolean = !!env.TESTNET_SECRET && ((request.headers.get("X-Testnet-Secret") || "") === env.TESTNET_SECRET);
+    const isTestnet : boolean = env.ENABLE_TESTNETS === "true" && !!env.TESTNET_SECRET && ((request.headers.get("X-Testnet-Secret") || "") === env.TESTNET_SECRET);
 
     // App-wide config endpoint: non-crypto parameters (generation limits, etc.)
     if (url.pathname === "/api/app-config") {
