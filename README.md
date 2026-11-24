@@ -1,107 +1,135 @@
 # Vectorizerr Cloudflare Worker Backend
 
-High-performance, edge-native backend powered by **Cloudflare Workers** with **Cron Triggers** and **REST Endpoints** for tracking, verifying, and crediting crypto transactions on **vectorizerr**.
+High-performance, edge-native backend service powered by **Cloudflare Workers** with **Cron Triggers**, **Cryptographic Handshake Verification**, **Multi-Chain Transaction Reconciler**, and **Confidential Support Email Dispatch** for **vectorizerr**.
 
 ---
 
-## ⚡ Why Cloudflare Workers over Google Cloud Functions?
+## ⚡ Edge Architecture Overview
 
 1. **Zero Cold Starts**: Executes immediately on Cloudflare's global edge network (300+ locations).
-2. **Cron Triggers (`[triggers.crons]`)**: Runs periodically every minute (`* * * * *`) without needing Cloud Scheduler or external cron jobs.
-3. **Multi-Chain Verification**: Directly queries EVM JSON-RPC nodes (BSC, Ethereum, Polygon, Base, Arbitrum) and Bitcoin Mempool API via edge-native `fetch`.
-4. **Direct Firestore REST Integration**: Uses Web Crypto API to sign RS256 Google Service Account JWTs and interacts with Firestore via REST API with atomic increments.
-5. **Cost Effective**: 100,000 requests/day free on Cloudflare Workers.
+2. **Cron Triggers (`* * * * *`)**: Monitors and reconciles pending cryptocurrency payments on-chain every minute without external scheduler overhead.
+3. **Multi-Chain RPC Verification**: Directly verifies transactions across BNB Smart Chain, Ethereum, Polygon, Base, Arbitrum, and Bitcoin.
+4. **Google Firebase REST & WebCrypto**: Signs RS256 Google Service Account JWTs at the edge using `crypto.subtle` to perform atomic increments in Firestore.
+5. **Confidential Customer Support**: Handles customer assistance inquiries with safe edge email delivery to `SUPPORT_EMAIL` (`your-support-email@example.com`), keeping the recipient email address strictly hidden from client bundles.
 
 ---
 
-## 🚀 Features
+## 🚀 Edge Endpoints & Features
 
-- **Automated Background Verification (Cron)**:
-  - Runs every minute via Cloudflare Scheduled Events.
-  - Queries all `status: 'pending'` transactions from the Firestore `transactions` collection.
-  - Checks block confirmations, transfer recipients, and token amounts on-chain.
-  - Upon confirmation:
-    - Atomically increments user `credits` in `users/{userId}`.
-    - Updates transaction to `status: 'confirmed'` with timestamp and verified block height.
-  - If a transaction is reverted on-chain, marks it `status: 'failed'`.
+### 1. Cryptographic Server Handshake (`POST /api/handshake`)
+- **Route**: `/api/handshake` or `/api/handshake/authorize`
+- **Purpose**: Authenticates image unlocking (1 credit = 10 fine-tuning generations) and signs tamper-proof HMAC-SHA256 tickets.
+- **Security**:
+  - Enforces `x-api-secret` matching `env.API_SECRET`.
+  - Verifies `X-Firebase-AppCheck` token against Google's public JWKS keys (`https://firebaseappcheck.googleapis.com/v1/jwks`).
+  - Verifies user ID token via Google Identity Toolkit API.
+  - Prevents client-side manipulation of credit counters.
 
-- **On-Demand Client Refresh (`POST /api/refresh-credits`)**:
-  - Called by the frontend when a user clicks "Refresh Credits" or when an active transaction is submitted.
-  - Checks pending transactions immediately for that user and returns the verified balance.
+### 2. On-Demand Credit Refresh (`POST /api/refresh-credits`)
+- **Route**: `/api/refresh-credits` or `/api/check-transactions`
+- **Purpose**: Instantly verifies on-chain transaction hashes for the requesting user and updates Firestore credits.
+- **Security**:
+  - Validates `x-api-secret` and Firebase App Check.
+  - Enforces ownership: authenticated user can only refresh their own `userId`.
 
-- **Supported Chains & Tokens**:
-  - **BNB Smart Chain (BSC)**: BNB (Native), USDT (BEP-20), USDC (BEP-20)
-  - **Ethereum (ETH)**: ETH (Native), USDT (ERC-20), USDC (ERC-20)
-  - **Bitcoin (BTC)**: BTC (Native Mempool API)
-  - **Polygon (POL)**: POL (Native), USDT, USDC
-  - **Base**: ETH (Native), USDC
-  - **Arbitrum One**: ETH (Native), USDT, USDC
+### 3. Customer Support & Assistance Dispatch (`POST /api/support`)
+- **Route**: `/api/support` or `/api/contact`
+- **Purpose**: Receives user assistance requests (particularly crypto transaction inquiries), creates an immutable ticket record in Firestore (`support_tickets` collection), and sends a notification email to `SUPPORT_EMAIL`.
+- **Confidentiality**: The destination email address (`your-support-email@example.com`) is kept strictly server-side and never exposed to the client.
+- **Security**:
+  - Validates `x-api-secret` and App Check.
+  - Attaches user authentication ID if provided.
+  - Logs client metadata (IP, country, User Agent).
+
+### 4. Background Transaction Tracker (Cron)
+- Runs every minute via Cloudflare Scheduled Events.
+- Queries `status: 'pending'` transactions from the `transactions` Firestore collection.
+- Checks block confirmations and transfer recipients on-chain.
+- Atomically increments user credits and marks transactions `confirmed` or `failed`.
+
+### 5. Strict CORS Origin Policy
+- CORS is locked to authorized origins:
+  - `https://vectorizerr.pages.dev`
+  - `http://localhost:3000`
+  - `http://127.0.0.1:3000`
 
 ---
 
 ## 🛠️ Local Development
 
-### 1. Install dependencies
+### 1. Install Dependencies
 ```bash
-cd backend
 npm install
 ```
 
 ### 2. Configure Local Secrets (`.dev.vars`)
-Create a `.dev.vars` file in `backend/` (based on `.dev.vars.example`):
+Create a `.dev.vars` file in the root directory:
 
 ```bash
 FIREBASE_PROJECT_ID=vectorizerr
 FIREBASE_CLIENT_EMAIL=your-service-account@vectorizerr.iam.gserviceaccount.com
 FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-API_SECRET=your-optional-secret
+API_SECRET=your-secure-shared-secret
+SUPPORT_EMAIL=your-support-email@example.com
 ```
 
-### 3. Run Worker Locally
+### 3. Start Local Edge Worker
 ```bash
 npm run dev
 ```
+The worker will listen on `http://localhost:8787`.
 
-The worker will start on `http://localhost:8787`. You can test:
-- `http://localhost:8787/health`
-- `curl -X POST http://localhost:8787/api/refresh-credits -H "Content-Type: application/json" -d '{"userId":"test-uid"}'`
+Test health endpoint:
+```bash
+curl http://localhost:8787/health
+```
 
 ---
 
 ## 🚢 Production Deployment
 
-### 1. Authenticate with Cloudflare
-```bash
-npx wrangler login
-```
-
-### 2. Set Production Secrets
-Set your Firebase Service Account secrets in Cloudflare:
+### 1. Configure Cloudflare Secrets
 ```bash
 npx wrangler secret put FIREBASE_PRIVATE_KEY
-# Paste your PEM private key when prompted
-
 npx wrangler secret put FIREBASE_CLIENT_EMAIL
-# Enter your service account email (e.g. your-service-account@vectorizerr.iam.gserviceaccount.com)
-
 npx wrangler secret put API_SECRET
-# Enter an optional shared secret if you want to protect the HTTP endpoint
 ```
 
-### 3. Deploy
+### 2. Configure Environment Variables in `wrangler.json`
+`wrangler.json` provides edge defaults:
+```json
+{
+  "vars": {
+    "ENVIRONMENT": "production",
+    "FIREBASE_PROJECT_ID": "vectorizerr",
+    "REQUIRED_CONFIRMATIONS": "1",
+    "SUPPORT_EMAIL": "your-support-email@example.com"
+  }
+}
+```
+
+### 3. Deploy to Cloudflare Workers
 ```bash
 npm run deploy
 ```
 
-Wrangler will output your live worker URL:
-`https://vectorizerr-backend.<your-subdomain>.workers.dev`
-
 ---
 
-## 🔗 Connecting Frontend to Worker
+## 📂 Project Structure
 
-In `frontend/.env.local` (or Cloudflare Pages environment variables):
-
-```bash
-NEXT_PUBLIC_REFRESH_CREDITS_FUNCTION_URL=https://vectorizerr-backend.<your-subdomain>.workers.dev/api/refresh-credits
+```
+vectorizerr-backend/
+├── src/
+│   ├── index.ts               # HTTP fetch router, Cron scheduled handler, and CORS rules
+│   ├── config/
+│   │   └── chains.ts          # Supported chains RPC endpoints and token contracts
+│   └── services/
+│       ├── app-check.ts       # RS256 JWKS App Check verification via WebCrypto
+│       ├── email.ts           # Edge email notification service (MailChannels / Resend)
+│       ├── firestore.ts       # Google Service Account JWT & Firestore REST integration
+│       ├── handshake.ts       # HMAC-SHA256 ticket signing & token validation
+│       └── verifier.ts        # EVM on-chain transaction receipt & block confirmation verifier
+├── wrangler.json              # Cloudflare Worker configuration & Cron triggers
+├── package.json
+└── tsconfig.json
 ```

@@ -1,5 +1,14 @@
-import { CHAINS_CONFIG, ERC20_CONTRACTS, SupportedChainKey, SupportedToken } from '../config/chains';
-import { CryptoTransactionDoc } from './firestore';
+import {
+  CHAINS_CONFIG,
+  CHAIN_ID_RPC_URLS,
+  DEFAULT_TESTNET_CHAIN_IDS,
+  ERC20_CONTRACTS,
+  getChainsConfig,
+  SupportedChainKey,
+  SupportedToken,
+} from "../config/chains";
+import { findWalletAddress, isValidWalletAddress } from "../config/wallets";
+import { CryptoTransactionDoc } from "./firestore";
 
 export interface VerificationResult {
   isConfirmed: boolean;
@@ -12,20 +21,29 @@ export interface VerificationResult {
 /**
  * Standard JSON-RPC caller with multiple fallback endpoints
  */
-async function callEvmRpc(chainKey: SupportedChainKey, method: string, params: any[]): Promise<any> {
-  const chain = CHAINS_CONFIG[chainKey];
+async function callEvmRpc(
+  isTestnet: boolean,
+
+  chainKey: SupportedChainKey,
+  method: string,
+  params: any[],
+  chainId?: number,
+): Promise<any> {
+  const chainsConfig = getChainsConfig(isTestnet);
+  const chain = chainsConfig[chainKey];
   if (!chain || !chain.isEvm) {
     throw new Error(`Chain ${chainKey} is not an EVM chain`);
   }
 
+  const rpcUrls = (chainId && CHAIN_ID_RPC_URLS[chainId]) || chain.rpcUrls;
   let lastError: Error | null = null;
-  for (const rpcUrl of chain.rpcUrls) {
+  for (const rpcUrl of rpcUrls) {
     try {
       const res = await fetch(rpcUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          jsonrpc: '2.0',
+          jsonrpc: "2.0",
           id: Math.floor(Math.random() * 100000),
           method,
           params,
@@ -35,7 +53,7 @@ async function callEvmRpc(chainKey: SupportedChainKey, method: string, params: a
       if (!res.ok) continue;
       const data = (await res.json()) as any;
       if (data.error) {
-        lastError = new Error(data.error.message || 'RPC Error');
+        lastError = new Error(data.error.message || "RPC Error");
         continue;
       }
       return data.result;
@@ -51,17 +69,17 @@ async function callEvmRpc(chainKey: SupportedChainKey, method: string, params: a
  * Normalizes an Ethereum address into 32-byte padded lowercase topic format
  */
 function addressToTopic(address: string): string {
-  const clean = address.toLowerCase().replace(/^0x/, '');
-  return '0x' + clean.padStart(64, '0');
+  const clean = address.toLowerCase().replace(/^0x/, "");
+  return "0x" + clean.padStart(64, "0");
 }
 
 /**
  * Parses token amount with decimal places into BigInt
  */
 function parseTokenUnits(amountStr: string, decimals: number): bigint {
-  const [whole, fraction = ''] = amountStr.trim().split('.');
-  const paddedFraction = fraction.padEnd(decimals, '0').slice(0, decimals);
-  const combined = `${whole}${paddedFraction}`.replace(/^0+/, '') || '0';
+  const [whole, fraction = ""] = amountStr.trim().split(".");
+  const paddedFraction = fraction.padEnd(decimals, "0").slice(0, decimals);
+  const combined = `${whole}${paddedFraction}`.replace(/^0+/, "") || "0";
   return BigInt(combined);
 }
 
@@ -69,48 +87,95 @@ function parseTokenUnits(amountStr: string, decimals: number): bigint {
  * Verifies an EVM transaction receipt and transfer contents
  */
 async function verifyEvmTransaction(
+  isTestnet: boolean,
   chainKey: SupportedChainKey,
   txHash: string,
   expectedRecipient: string,
   expectedAmount: string,
-  token: SupportedToken
+  token: SupportedToken,
+  chainId?: number,
 ): Promise<VerificationResult> {
   try {
-    const chain = CHAINS_CONFIG[chainKey];
-    const receipt = await callEvmRpc(chainKey, 'eth_getTransactionReceipt', [txHash]);
+    // SECURITY: Validate that recipient is a configured wallet address
+    if (!isValidWalletAddress(isTestnet, expectedRecipient)) {
+      return {
+        isConfirmed: false,
+        isFailed: true,
+        statusMessage:
+          "Invalid recipient address: not a configured payment wallet.",
+      };
+    }
+
+    const chainsConfig = getChainsConfig(isTestnet);
+    const chain = chainsConfig[chainKey];
+    let effectiveChainId = chainId;
+    let receipt = await callEvmRpc(
+      isTestnet,
+
+      chainKey,
+      "eth_getTransactionReceipt",
+      [txHash],
+      effectiveChainId,
+    );
+
+    // If receipt not found and chainId was not specified, try testnet RPC as fallback
+    if (!receipt && !chainId && DEFAULT_TESTNET_CHAIN_IDS[chainKey]) {
+      try {
+        const testnetReceipt = await callEvmRpc(
+          isTestnet,
+
+          chainKey,
+          "eth_getTransactionReceipt",
+          [txHash],
+          DEFAULT_TESTNET_CHAIN_IDS[chainKey],
+        );
+        if (testnetReceipt) {
+          receipt = testnetReceipt;
+          effectiveChainId = DEFAULT_TESTNET_CHAIN_IDS[chainKey];
+        }
+      } catch {}
+    }
 
     // Transaction not yet mined
     if (!receipt) {
       return {
         isConfirmed: false,
         isFailed: false,
-        statusMessage: 'Transaction pending inclusion in block.',
+        statusMessage: "Transaction pending inclusion in block.",
       };
     }
 
     // Status: 0x0 is reverted/failed, 0x1 is success
-    if (receipt.status === '0x0') {
+    if (receipt.status === "0x0") {
       return {
         isConfirmed: false,
         isFailed: true,
-        statusMessage: 'Transaction reverted on-chain.',
+        statusMessage: "Transaction reverted on-chain.",
       };
     }
 
     const isNative = token === chain.nativeToken;
 
     if (isNative) {
-      // Verify Native transfer (ETH, BNB, POL)
-      const tx = await callEvmRpc(chainKey, 'eth_getTransactionByHash', [txHash]);
+      // Verify Native transfer (ETH, BNB, POL, AVAX, XPL)
+      const tx = await callEvmRpc(
+        isTestnet,
+
+        chainKey,
+        "eth_getTransactionByHash",
+        [txHash],
+        effectiveChainId,
+      );
       if (!tx) {
         return {
           isConfirmed: false,
           isFailed: false,
-          statusMessage: 'Transaction found in receipt but awaiting full block synchronization.',
+          statusMessage:
+            "Transaction found in receipt but awaiting full block synchronization.",
         };
       }
 
-      const txTo = (tx.to || '').toLowerCase();
+      const txTo = (tx.to || "").toLowerCase();
       const expectedTo = expectedRecipient.toLowerCase();
 
       if (txTo !== expectedTo) {
@@ -122,7 +187,7 @@ async function verifyEvmTransaction(
       }
 
       const expectedWei = parseTokenUnits(expectedAmount, 18);
-      const actualWei = BigInt(tx.value || '0x0');
+      const actualWei = BigInt(tx.value || "0x0");
 
       // Allow 1% tolerance for gas estimation or rounding differences
       const minRequired = (expectedWei * 99n) / 100n;
@@ -143,11 +208,14 @@ async function verifyEvmTransaction(
       };
     } else {
       // Verify ERC-20 token transfer (USDT, USDC)
-      const chainId = chain.chainId || 1;
-      const contractConfig = ERC20_CONTRACTS[chainId]?.[token];
-      const decimals = contractConfig?.decimals || (token === 'USDT' || token === 'USDC' ? 6 : 18);
+      const effectiveId = effectiveChainId || chain.chainId || 1;
+      const contractConfig = ERC20_CONTRACTS[effectiveId]?.[token];
+      const decimals =
+        contractConfig?.decimals ||
+        (token === "USDT" || token === "USDC" ? 6 : 18);
       const expectedPaddedRecipient = addressToTopic(expectedRecipient);
-      const transferTopic = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+      const transferTopic =
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
       let transferFound = false;
       let transferredAmount = 0n;
@@ -156,10 +224,19 @@ async function verifyEvmTransaction(
         if (!log.topics || log.topics.length < 3) continue;
         if (log.topics[0].toLowerCase() !== transferTopic) continue;
 
+        // Verify contract address matches configured token contract if known
+        if (
+          contractConfig?.address &&
+          log.address &&
+          log.address.toLowerCase() !== contractConfig.address.toLowerCase()
+        ) {
+          continue;
+        }
+
         const recipientTopic = log.topics[2].toLowerCase();
         if (recipientTopic === expectedPaddedRecipient) {
           transferFound = true;
-          transferredAmount += BigInt(log.data || '0x0');
+          transferredAmount += BigInt(log.data || "0x0");
         }
       }
 
@@ -206,20 +283,40 @@ async function verifyBtcTransaction(
   txHash: string | undefined,
   expectedRecipient: string,
   expectedAmount: string,
-  createdAtMs: number
+  createdAtMs: number,
+  isTestnet: boolean,
 ): Promise<VerificationResult> {
+  // SECURITY: Validate that recipient is a configured wallet address
+  if (!isValidWalletAddress(isTestnet, expectedRecipient)) {
+    return {
+      isConfirmed: false,
+      isFailed: true,
+      statusMessage:
+        "Invalid recipient address: not a configured payment wallet.",
+    };
+  }
+  const isTestnetBtc =
+    expectedRecipient.startsWith("tb1") ||
+    expectedRecipient.startsWith("m") ||
+    expectedRecipient.startsWith("n") ||
+    expectedRecipient.startsWith("2");
+
+  const mempoolBase = isTestnetBtc
+    ? "https://mempool.space/testnet/api"
+    : "https://mempool.space/api";
+
   const expectedSatoshis = parseTokenUnits(expectedAmount, 8);
   const minSatoshis = (expectedSatoshis * 99n) / 100n;
 
   // 1. If user supplied txHash, verify it directly
   if (txHash && txHash.trim()) {
     try {
-      const res = await fetch(`https://mempool.space/api/tx/${txHash.trim()}`);
+      const res = await fetch(`${mempoolBase}/tx/${txHash.trim()}`);
       if (!res.ok) {
         return {
           isConfirmed: false,
           isFailed: false,
-          statusMessage: 'Transaction not found in Bitcoin mempool yet.',
+          statusMessage: "Transaction not found in Bitcoin mempool yet.",
         };
       }
 
@@ -246,7 +343,8 @@ async function verifyBtcTransaction(
         return {
           isConfirmed: false,
           isFailed: false,
-          statusMessage: 'Bitcoin transaction seen in mempool; awaiting block confirmation.',
+          statusMessage:
+            "Bitcoin transaction seen in mempool; awaiting block confirmation.",
         };
       }
 
@@ -268,12 +366,12 @@ async function verifyBtcTransaction(
 
   // 2. If no txHash was provided (e.g. user sent via QR code and clicked 'I Have Sent')
   try {
-    const res = await fetch(`https://mempool.space/api/address/${expectedRecipient}/txs`);
+    const res = await fetch(`${mempoolBase}/address/${expectedRecipient}/txs`);
     if (!res.ok) {
       return {
         isConfirmed: false,
         isFailed: false,
-        statusMessage: 'Awaiting incoming Bitcoin transaction.',
+        statusMessage: "Awaiting incoming Bitcoin transaction.",
       };
     }
 
@@ -314,7 +412,7 @@ async function verifyBtcTransaction(
     return {
       isConfirmed: false,
       isFailed: false,
-      statusMessage: 'No matching transaction detected on Bitcoin network yet.',
+      statusMessage: "No matching transaction detected on Bitcoin network yet.",
     };
   } catch (err: any) {
     return {
@@ -329,31 +427,35 @@ async function verifyBtcTransaction(
  * Universal transaction verifier across EVM and Bitcoin networks
  */
 export async function verifyCryptoTransaction(
-  tx: CryptoTransactionDoc
+  tx: CryptoTransactionDoc,
+  isTestnet: boolean,
 ): Promise<VerificationResult> {
-  if (tx.chainKey === 'btc') {
+  if (tx.chainKey === "btc") {
     return await verifyBtcTransaction(
       tx.txHash,
       tx.toAddress,
       tx.cryptoAmount,
-      tx.createdAt
+      tx.createdAt,
+      isTestnet,
     );
   }
 
   // EVM chains require txHash for precise receipt verification
-  if (!tx.txHash || !tx.txHash.startsWith('0x')) {
+  if (!tx.txHash || !tx.txHash.startsWith("0x")) {
     return {
       isConfirmed: false,
       isFailed: false,
-      statusMessage: 'Awaiting transaction hash from user or wallet.',
+      statusMessage: "Awaiting transaction hash from user or wallet.",
     };
   }
 
   return await verifyEvmTransaction(
+    isTestnet,
     tx.chainKey,
     tx.txHash,
     tx.toAddress,
     tx.cryptoAmount,
-    tx.cryptoToken
+    tx.cryptoToken,
+    tx.chainId,
   );
 }

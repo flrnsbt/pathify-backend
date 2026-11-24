@@ -1,0 +1,136 @@
+{
+  "wallets": [
+    {
+      "chainKey": "bsc",
+      "chainId": 56,
+      "token": "USDT",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "bsc",
+      "chainId": 56,
+      "token": "USDC",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "bsc",
+      "chainId": 56,
+      "token": "BNB",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "eth",
+      "chainId": 1,
+      "token": "ETH",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "eth",
+      "chainId": 1,
+      "token": "USDT",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "eth",
+      "chainId": 1,
+      "token": "USDC",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "pol",
+      "chainId": 137,
+      "token": "USDT",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "pol",
+      "chainId": 137,
+      "token": "USDC",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "pol",
+      "chainId": 137,
+      "token": "POL",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "base",
+      "chainId": 8453,
+      "token": "ETH",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "base",
+      "chainId": 8453,
+      "token": "USDC",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "arbitrum",
+      "chainId": 42161,
+      "token": "ETH",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "arbitrum",
+      "chainId": 42161,
+      "token": "USDT",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "arbitrum",
+      "chainId": 42161,
+      "token": "USDC",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "op",
+      "chainId": 10,
+      "token": "ETH",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "op",
+      "chainId": 10,
+      "token": "USDT",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "op",
+      "chainId": 10,
+      "token": "USDC",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "avax",
+      "chainId": 43114,
+      "token": "AVAX",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "avax",
+      "chainId": 43114,
+      "token": "USDT",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "avax",
+      "chainId": 43114,
+      "token": "USDC",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "plasma",
+      "chainId": 9745,
+      "token": "XPL",
+      "address": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "chainKey": "plasma",
+      "chainId": 9745,
+      "token": "USDC",
+      "address": "0x0000000000000000000000000000000000000000"
+    }
+  ]
+}

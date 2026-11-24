@@ -20,6 +20,7 @@ export interface CryptoTransactionDoc {
   createdAt: number;
   updatedAt: number;
   confirmedAt?: number;
+  isTestnet?: boolean;
 }
 
 let cachedAccessToken: string | null = null;
@@ -158,7 +159,7 @@ function parseFirestoreFields(fields?: Record<string, any>): Record<string, any>
 /**
  * Converts a JavaScript object into Firestore REST API typed values
  */
-function toFirestoreFields(obj: Record<string, any>): Record<string, any> {
+export function toFirestoreFields(obj: Record<string, any>): Record<string, any> {
   const fields: Record<string, any> = {};
   for (const [key, val] of Object.entries(obj)) {
     if (val === undefined) continue;
@@ -168,7 +169,20 @@ function toFirestoreFields(obj: Record<string, any>): Record<string, any> {
       if (Number.isInteger(val)) fields[key] = { integerValue: String(val) };
       else fields[key] = { doubleValue: val };
     } else if (typeof val === 'boolean') fields[key] = { booleanValue: val };
-    else if (typeof val === 'object') {
+    else if (Array.isArray(val)) {
+      fields[key] = {
+        arrayValue: {
+          values: val.map((v) => {
+            if (v === null || v === undefined) return { nullValue: null };
+            if (typeof v === 'string') return { stringValue: v };
+            if (typeof v === 'number') return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+            if (typeof v === 'boolean') return { booleanValue: v };
+            if (typeof v === 'object') return { mapValue: { fields: toFirestoreFields(v) } };
+            return { stringValue: String(v) };
+          }),
+        },
+      };
+    } else if (typeof val === 'object') {
       fields[key] = { mapValue: { fields: toFirestoreFields(val) } };
     }
   }
@@ -266,6 +280,7 @@ export async function getPendingTransactions(
         createdAt: parsed.createdAt || Date.now(),
         updatedAt: parsed.updatedAt || Date.now(),
         confirmedAt: parsed.confirmedAt,
+        isTestnet: Boolean(parsed.isTestnet),
       });
     }
 
@@ -369,4 +384,190 @@ export async function incrementUserCredits(
     console.error('Error incrementing user credits:', err);
     return false;
   }
+}
+
+export interface SupportTicketData {
+  id: string;
+  userId?: string;
+  userEmail: string;
+  name?: string;
+  category: string;
+  subject?: string;
+  message: string;
+  txHash?: string;
+  chainKey?: string;
+  walletAddress?: string;
+  status: 'open' | 'in_progress' | 'resolved';
+  createdAt: number;
+  emailSent?: boolean;
+}
+
+/**
+ * Creates a support ticket document in Firestore (support_tickets collection)
+ */
+export async function createSupportTicketDoc(
+  projectId: string,
+  accessToken: string | null,
+  ticket: SupportTicketData
+): Promise<boolean> {
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/support_tickets?documentId=${ticket.id}`;
+
+  const fields: Record<string, any> = {
+    id: { stringValue: ticket.id },
+    userEmail: { stringValue: ticket.userEmail },
+    category: { stringValue: ticket.category },
+    message: { stringValue: ticket.message },
+    status: { stringValue: ticket.status || 'open' },
+    createdAt: { integerValue: String(ticket.createdAt) },
+  };
+
+  if (ticket.userId) fields.userId = { stringValue: ticket.userId };
+  if (ticket.name) fields.name = { stringValue: ticket.name };
+  if (ticket.subject) fields.subject = { stringValue: ticket.subject };
+  if (ticket.txHash) fields.txHash = { stringValue: ticket.txHash };
+  if (ticket.chainKey) fields.chainKey = { stringValue: ticket.chainKey };
+  if (ticket.walletAddress) fields.walletAddress = { stringValue: ticket.walletAddress };
+  if (typeof ticket.emailSent === 'boolean') fields.emailSent = { booleanValue: ticket.emailSent };
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ fields }),
+    });
+
+    if (!res.ok) {
+      console.error('Failed to create support ticket in Firestore:', res.status, await res.text());
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('Error creating support ticket in Firestore:', err);
+    return false;
+  }
+}
+
+export interface CreateTransactionInput {
+  id?: string;
+  userId: string;
+  userEmail?: string;
+  packId: string;
+  credits: number;
+  usdPrice: number;
+  cryptoAmount: string;
+  cryptoToken: string;
+  chainKey: string;
+  chainId?: number;
+  paymentMethod: 'web3' | 'direct';
+  fromAddress?: string;
+  toAddress: string;
+  txHash?: string;
+  status?: 'pending' | 'confirmed' | 'failed' | 'cancelled';
+  statusMessage?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  isTestnet?: boolean;
+}
+
+/**
+ * Creates a transaction document in Firestore (transactions collection)
+ * using the Google Service Account via Firestore REST API.
+ */
+export async function createTransactionDoc(
+  projectId: string,
+  accessToken: string | null,
+  data: CreateTransactionInput
+): Promise<string> {
+  const now = Date.now();
+  const docId = data.id || `tx_${now}_${Math.random().toString(36).slice(2, 9)}`;
+
+  const txData = {
+    ...data,
+    id: docId,
+    status: data.status || 'pending',
+    createdAt: data.createdAt || now,
+    updatedAt: data.updatedAt || now,
+  };
+
+  const fields = toFirestoreFields(txData);
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/transactions?documentId=${docId}`;
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ fields }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Failed to create transaction document in Firestore (${res.status}): ${errText}`);
+  }
+
+  return docId;
+}
+
+export interface CreateHistoryInput {
+  id?: string;
+  userId: string;
+  fileName: string;
+  originalDimensions?: { width: number; height: number };
+  originalSize?: number;
+  originalBase64?: string;
+  imageHash?: string;
+  nodeCount?: number;
+  executionTimeMs?: number;
+  parameters?: Record<string, any>;
+  svg: string;
+  svgSize?: number;
+  createdAt?: number;
+}
+
+/**
+ * Creates a history item document in Firestore under users/{userId}/history subcollection
+ * using the Google Service Account via Firestore REST API.
+ */
+export async function createHistoryDoc(
+  projectId: string,
+  accessToken: string | null,
+  data: CreateHistoryInput
+): Promise<string> {
+  const now = Date.now();
+  const docId = data.id || `hist_${now}_${Math.random().toString(36).slice(2, 9)}`;
+
+  const historyData = {
+    ...data,
+    id: docId,
+    createdAt: data.createdAt || now,
+  };
+
+  const fields = toFirestoreFields(historyData);
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${data.userId}/history?documentId=${docId}`;
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ fields }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Failed to create history document in Firestore (${res.status}): ${errText}`);
+  }
+
+  return docId;
 }
